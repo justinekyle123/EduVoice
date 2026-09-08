@@ -2,6 +2,7 @@ import Link from "next/link";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
 import {
+  AlertTriangle,
   ArrowRight,
   CheckCircle2,
   ClipboardList,
@@ -20,10 +21,19 @@ export default async function OverviewPage() {
   const email = clerkUser?.emailAddresses[0]?.emailAddress ?? "";
   const name = clerkUser?.fullName ?? clerkUser?.username ?? null;
 
-  // Fallback sync (in case the Clerk webhook isn't configured yet).
-  let dbUser = await getUserByClerkId(userId);
-  if (!dbUser) {
-    dbUser = await upsertUser({ clerkId: userId, email, name });
+  // Fallback sync (in case the Clerk webhook isn't configured yet). Wrapped in
+  // try/catch so an unreachable database shows a banner instead of crashing the
+  // whole dashboard (e.g. missing DATABASE_URL in the deployment environment).
+  let dbUser: Awaited<ReturnType<typeof getUserByClerkId>> | null = null;
+  let dbError: string | null = null;
+  try {
+    dbUser = await getUserByClerkId(userId);
+    if (!dbUser) {
+      dbUser = await upsertUser({ clerkId: userId, email, name });
+    }
+  } catch (error) {
+    dbError = error instanceof Error ? error.message : "Unknown database error";
+    console.error("[dashboard] database sync failed:", dbError);
   }
 
   const today = new Date().toLocaleDateString("en-US", {
@@ -92,6 +102,27 @@ export default async function OverviewPage() {
 
   return (
     <div className="space-y-8">
+      {/* Database warning */}
+      {dbError && (
+        <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+          <div className="text-sm">
+            <p className="font-semibold text-amber-800">
+              Database unavailable
+            </p>
+            <p className="mt-1 leading-6 text-amber-700">
+              Could not reach Postgres, so your profile couldn&apos;t be synced.
+              Check that <code className="font-mono text-xs">DATABASE_URL</code>{" "}
+              is set (without quotes) in Vercel → Settings → Environment
+              Variables, then redeploy.
+            </p>
+            <p className="mt-2 font-mono text-xs text-amber-600/80">
+              {dbError}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Greeting */}
       <div>
         <p className="text-sm font-medium text-zinc-500">{today}</p>
@@ -162,18 +193,30 @@ export default async function OverviewPage() {
             <div className="flex items-center justify-between gap-4">
               <dt className="text-zinc-500">DB sync</dt>
               <dd>
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200">
-                  <CheckCircle2 className="h-3 w-3" />
-                  {dbUser ? "Synced" : "Pending"}
-                </span>
+                {dbError ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-700 ring-1 ring-amber-200">
+                    Unavailable
+                  </span>
+                ) : dbUser ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200">
+                    <CheckCircle2 className="h-3 w-3" />
+                    Synced
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-700 ring-1 ring-amber-200">
+                    Pending
+                  </span>
+                )}
               </dd>
             </div>
           </dl>
-          <p className="mt-5 rounded-xl bg-zinc-50 p-3 text-xs leading-5 text-zinc-500 ring-1 ring-zinc-100">
-            Your profile is stored locally in the{" "}
-            <code className="font-mono text-zinc-700">users</code> table and
-            synced from Clerk.
-          </p>
+          {!dbError && (
+            <p className="mt-5 rounded-xl bg-zinc-50 p-3 text-xs leading-5 text-zinc-500 ring-1 ring-zinc-100">
+              Your profile is stored locally in the{" "}
+              <code className="font-mono text-zinc-700">users</code> table and
+              synced from Clerk.
+            </p>
+          )}
         </section>
 
         <div className="space-y-6 lg:col-span-3">
