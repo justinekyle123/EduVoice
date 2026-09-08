@@ -4,7 +4,12 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 const isProtectedRoute = createRouteMatcher(["/dashboard(.*)"]);
 
 export default clerkMiddleware(async (auth, req) => {
-  if (isProtectedRoute(req)) {
+  // Only redirect page navigations (GET). Server-action POSTs — like Clerk's
+  // sign-out action, which clears the session cookie — must pass through
+  // untouched: redirecting them makes Next.js throw "Invalid Server Actions
+  // request." The dashboard page re-checks auth() itself, so GET-only
+  // protection is still safe.
+  if (isProtectedRoute(req) && req.method === "GET") {
     await auth.protect();
   }
 });
