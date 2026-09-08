@@ -1,18 +1,11 @@
-import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+import { clerkMiddleware } from "@clerk/nextjs/server";
 
-// Protect the dashboard (and any future /app routes). Everything else is public.
-const isProtectedRoute = createRouteMatcher(["/dashboard(.*)"]);
-
-export default clerkMiddleware(async (auth, req) => {
-  // Only redirect page navigations (GET). Server-action POSTs — like Clerk's
-  // sign-out action, which clears the session cookie — must pass through
-  // untouched: redirecting them makes Next.js throw "Invalid Server Actions
-  // request." The dashboard page re-checks auth() itself, so GET-only
-  // protection is still safe.
-  if (isProtectedRoute(req) && req.method === "GET") {
-    await auth.protect();
-  }
-});
+// Route protection is resource-based: the (dashboard) layout calls auth() and
+// redirects unauthenticated users, which is Clerk's recommended pattern.
+// clerkMiddleware stays here only to hydrate the session and keep Clerk's
+// frontend API routes working. It never redirects requests, so server-action
+// POSTs (e.g. Clerk sign-out) always pass through untouched.
+export default clerkMiddleware();
 
 export const config = {
   matcher: [

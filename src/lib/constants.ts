@@ -7,9 +7,11 @@ import {
   GraduationCap,
   HeartPulse,
   Languages,
+  LayoutDashboard,
   Layers,
   Lightbulb,
   ListTodo,
+  MessageSquare,
   Mic,
   Swords,
   TrendingUp,
@@ -157,6 +159,51 @@ export const steps = [
       "Charts and trends reveal your strengths and weak spots so you always know what to study next.",
   },
 ];
+
+export const dashboardNav = [
+  {
+    href: "/dashboard",
+    label: "Overview",
+    icon: LayoutDashboard,
+    description: "Your study hub — stats, activity, and quick actions.",
+  },
+  {
+    href: "/dashboard/chat",
+    label: "Chat",
+    icon: MessageSquare,
+    description: "Voice and text Q&A with your AI tutor — with hint, debate, and interview modes.",
+  },
+  {
+    href: "/dashboard/quiz",
+    label: "Quiz",
+    icon: ClipboardList,
+    description: "Auto-generated quizzes from your uploaded materials, with instant scoring.",
+  },
+  {
+    href: "/dashboard/documents",
+    label: "Documents",
+    icon: FileText,
+    description: "Upload PDFs and Word files, get summaries, and ask questions about the content.",
+  },
+  {
+    href: "/dashboard/flashcards",
+    label: "Flashcards",
+    icon: Layers,
+    description: "Smart flashcards extracted from your notes, reviewed with spaced repetition.",
+  },
+  {
+    href: "/dashboard/tasks",
+    label: "Tasks",
+    icon: ListTodo,
+    description: "Hands-free study to-dos and reminders captured by voice.",
+  },
+  {
+    href: "/dashboard/progress",
+    label: "Progress",
+    icon: TrendingUp,
+    description: "Scores, sessions, and trends that show your strengths and weak spots.",
+  },
+] as const;
 
 export const languages = [
   {
