@@ -14,6 +14,7 @@
     "db:check": "drizzle-kit check"
   },
   "dependencies": {
+    "@clerk/nextjs": "^7.9.1",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.2",
     "lucide-react": "^1.42.0",
@@ -22,6 +23,7 @@
     "pg": "^8.23.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "svix": "^2.3.0",
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {

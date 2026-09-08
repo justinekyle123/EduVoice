@@ -1,0 +1,9 @@
+import { SignIn } from "@clerk/nextjs";
+
+export default function SignInPage() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-gradient-to-b from-indigo-50/80 via-white to-white px-4 py-16">
+      <SignIn />
+    </div>
+  );
+}

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { motion } from "motion/react";
 import { ArrowRight, Sparkles } from "lucide-react";
 
@@ -36,13 +37,13 @@ export function CTA() {
             into quizzes — all in the language you feel most comfortable speaking.
           </p>
           <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
-            <a
-              href="#features"
+            <Link
+              href="/sign-up"
               className="group inline-flex h-12 items-center gap-2 rounded-full bg-white px-7 text-sm font-semibold text-indigo-700 shadow-lg shadow-indigo-900/20 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl"
             >
-              Explore all 15 features
+              Get started free
               <ArrowRight className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-0.5" />
-            </a>
+            </Link>
             <a
               href="#how-it-works"
               className="inline-flex h-12 items-center rounded-full border border-white/30 bg-white/10 px-7 text-sm font-medium text-white backdrop-blur transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/20"

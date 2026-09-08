@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { motion, type Variants } from "motion/react";
 import { Languages, Lightbulb, Mic, Sparkles, Volume2 } from "lucide-react";
 import { siteConfig } from "@/lib/constants";
@@ -65,15 +66,15 @@ export function Hero() {
             variants={item}
             className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row"
           >
-            <a
-              href="#cta"
+            <Link
+              href="/sign-up"
               className="group inline-flex h-12 items-center gap-2 rounded-full bg-zinc-900 px-7 text-sm font-medium text-white shadow-lg shadow-zinc-900/10 transition-all duration-200 hover:-translate-y-0.5 hover:bg-zinc-700 hover:shadow-xl"
             >
               Get started free
               <span className="transition-transform duration-200 group-hover:translate-x-0.5">
                 →
               </span>
-            </a>
+            </Link>
             <a
               href="#how-it-works"
               className="inline-flex h-12 items-center rounded-full border border-zinc-200 bg-white px-7 text-sm font-medium text-zinc-700 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-zinc-300 hover:shadow-md"

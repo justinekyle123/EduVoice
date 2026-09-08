@@ -1,8 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { GraduationCap, Menu, X } from "lucide-react";
+import { Show, UserButton } from "@clerk/nextjs";
 import { cn } from "@/lib/utils";
 import { navLinks, siteConfig } from "@/lib/constants";
 
@@ -49,12 +51,29 @@ export function Navbar() {
               {link.label}
             </a>
           ))}
-          <a
-            href="#cta"
-            className="rounded-full bg-zinc-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all duration-200 hover:bg-zinc-700 hover:shadow-md"
-          >
-            Get started
-          </a>
+          <Show when="signed-out">
+            <Link
+              href="/sign-in"
+              className="text-sm font-medium text-zinc-600 transition-colors duration-200 hover:text-zinc-900"
+            >
+              Sign in
+            </Link>
+            <Link
+              href="/sign-up"
+              className="rounded-full bg-zinc-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all duration-200 hover:bg-zinc-700 hover:shadow-md"
+            >
+              Get started
+            </Link>
+          </Show>
+          <Show when="signed-in">
+            <Link
+              href="/dashboard"
+              className="text-sm font-medium text-zinc-600 transition-colors duration-200 hover:text-zinc-900"
+            >
+              Dashboard
+            </Link>
+            <UserButton />
+          </Show>
         </div>
 
         <button
@@ -87,13 +106,31 @@ export function Navbar() {
                   {link.label}
                 </a>
               ))}
-              <a
-                href="#cta"
-                onClick={() => setOpen(false)}
-                className="mt-2 rounded-full bg-zinc-900 px-4 py-2.5 text-center text-sm font-medium text-white"
-              >
-                Get started
-              </a>
+              <Show when="signed-out">
+                <Link
+                  href="/sign-in"
+                  onClick={() => setOpen(false)}
+                  className="rounded-lg px-3 py-2.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100"
+                >
+                  Sign in
+                </Link>
+                <Link
+                  href="/sign-up"
+                  onClick={() => setOpen(false)}
+                  className="mt-2 rounded-full bg-zinc-900 px-4 py-2.5 text-center text-sm font-medium text-white"
+                >
+                  Get started
+                </Link>
+              </Show>
+              <Show when="signed-in">
+                <Link
+                  href="/dashboard"
+                  onClick={() => setOpen(false)}
+                  className="rounded-lg px-3 py-2.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100"
+                >
+                  Dashboard
+                </Link>
+              </Show>
             </div>
           </motion.div>
         )}
