@@ -1,5 +1,12 @@
-import { ComingSoon } from "@/features/dashboard/components/ComingSoon";
+import { auth } from "@clerk/nextjs/server";
+import { redirect } from "next/navigation";
+import { ChatUI } from "@/features/chat/components/ChatUI";
 
-export default function ChatPage() {
-  return <ComingSoon section="chat" />;
+export const dynamic = "force-dynamic";
+
+export default async function ChatPage() {
+  const { userId } = await auth();
+  if (!userId) redirect("/sign-in");
+
+  return <ChatUI />;
 }
