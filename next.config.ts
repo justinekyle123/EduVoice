@@ -1,21 +1,27 @@
 import type { NextConfig } from "next";
 
+// GitHub Codespaces & VS Code Tunnels forward ports through their own domains,
+// so the browser's `Origin` never matches the `Host` Next.js sees inside the
+// container. Per the Next.js docs, the tunnel hostname belongs in both places:
+//  - allowedDevOrigins: lets the dev server serve assets/endpoints to it
+//  - experimental.serverActions.allowedOrigins: accepts server actions from it
+// (e.g. Clerk sign-out) instead of aborting with "Invalid Server Actions
+// request." Wildcards use remotePatterns syntax (* = one label, ** = many).
+// Production config is untouched — origins match the host on Vercel.
+const tunnelOrigins = [
+  "*.app.github.dev", // GitHub Codespaces
+  "*.githubpreview.dev", // older Codespaces domains
+  "*.devtunnels.ms", // VS Code Tunnels
+];
+
 const nextConfig: NextConfig = {
-  // GitHub Codespaces & VS Code Tunnels forward ports through their own
-  // domains, so the browser's `Origin` header never matches the `Host` that
-  // Next.js sees inside the container. That mismatch makes Next.js abort
-  // every server action (e.g. Clerk sign-out) with "Invalid Server Actions
-  // request." Allowlist those dev domains here — wildcards are supported,
-  // with the same syntax as next/image remotePatterns. Production is
-  // unaffected: origins match the host on Vercel.
-  serverActions:
+  allowedDevOrigins: tunnelOrigins,
+  experimental:
     process.env.NODE_ENV === "development"
       ? {
-          allowedOrigins: [
-            "*.app.github.dev", // GitHub Codespaces
-            "*.githubpreview.dev", // older Codespaces domains
-            "*.devtunnels.ms", // VS Code Tunnels
-          ],
+          serverActions: {
+            allowedOrigins: tunnelOrigins,
+          },
         }
       : undefined,
 };
