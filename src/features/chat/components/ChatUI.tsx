@@ -223,8 +223,8 @@ export function ChatUI() {
               className={cn(
                 "group flex items-center gap-2 rounded-xl px-3 py-2.5 text-left transition-colors",
                 active
-                  ? "bg-indigo-50"
-                  : "hover:bg-zinc-100"
+                  ? "bg-indigo-50 dark:bg-indigo-500/10"
+                  : "hover:bg-zinc-100 dark:hover:bg-zinc-800"
               )}
             >
               <button
@@ -235,13 +235,13 @@ export function ChatUI() {
                 <p
                   className={cn(
                     "truncate text-sm font-medium",
-                    active ? "text-indigo-700" : "text-zinc-800"
+                    active ? "text-indigo-700 dark:text-indigo-300" : "text-zinc-800 dark:text-zinc-100"
                   )}
                 >
                   {s.title ?? "Untitled chat"}
                 </p>
                 {s.preview && (
-                  <p className="mt-0.5 truncate text-xs text-zinc-400">
+                  <p className="mt-0.5 truncate text-xs text-zinc-400 dark:text-zinc-500">
                     {s.preview}
                   </p>
                 )}
@@ -250,7 +250,7 @@ export function ChatUI() {
                 type="button"
                 onClick={() => handleDelete(s.id)}
                 aria-label={`Delete ${s.title ?? "chat"}`}
-                className="shrink-0 rounded-lg p-1.5 text-zinc-300 opacity-0 transition-all hover:bg-red-50 hover:text-red-500 group-hover:opacity-100"
+                className="shrink-0 rounded-lg p-1.5 text-zinc-300 opacity-0 transition-all hover:bg-red-50 hover:text-red-500 dark:text-zinc-600 dark:hover:bg-red-500/10 dark:hover:text-red-400 group-hover:opacity-100"
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
@@ -258,7 +258,7 @@ export function ChatUI() {
           );
         })}
         {sessions.length === 0 && (
-          <p className="px-3 py-6 text-center text-xs leading-5 text-zinc-400">
+          <p className="px-3 py-6 text-center text-xs leading-5 text-zinc-400 dark:text-zinc-500">
             No chats yet. Start a new conversation!
           </p>
         )}
@@ -269,7 +269,7 @@ export function ChatUI() {
   return (
     <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
       {/* Desktop session list */}
-      <aside className="hidden overflow-hidden rounded-2xl border border-zinc-200/80 bg-white shadow-sm lg:block">
+      <aside className="hidden overflow-hidden rounded-2xl border border-zinc-200/80 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 lg:block">
         {sessionPanel}
       </aside>
 
@@ -290,16 +290,16 @@ export function ChatUI() {
               animate={{ x: 0 }}
               exit={{ x: "-100%" }}
               transition={{ type: "spring", damping: 30, stiffness: 300 }}
-              className="fixed inset-y-0 left-0 z-50 w-72 bg-white shadow-2xl lg:hidden"
+              className="fixed inset-y-0 left-0 z-50 w-72 bg-white shadow-2xl dark:bg-zinc-900 lg:hidden"
             >
-              <div className="flex items-center justify-between border-b border-zinc-100 px-4 py-3">
-                <span className="text-sm font-semibold text-zinc-900">
+              <div className="flex items-center justify-between border-b border-zinc-100 px-4 py-3 dark:border-zinc-800">
+                <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                   Conversations
                 </span>
                 <button
                   type="button"
                   onClick={() => setShowSessions(false)}
-                  className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100"
+                  className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
                   aria-label="Close conversations"
                 >
                   <X className="h-4 w-4" />
@@ -312,22 +312,22 @@ export function ChatUI() {
       </AnimatePresence>
 
       {/* Chat panel */}
-      <section className="flex h-[75vh] flex-col overflow-hidden rounded-2xl border border-zinc-200/80 bg-white shadow-sm lg:h-[calc(100vh-10rem)]">
+      <section className="flex h-[75vh] flex-col overflow-hidden rounded-2xl border border-zinc-200/80 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 lg:h-[calc(100vh-10rem)]">
         {/* Header */}
-        <header className="flex items-center gap-2 border-b border-zinc-100 px-4 py-3">
+        <header className="flex items-center gap-2 border-b border-zinc-100 px-4 py-3 dark:border-zinc-800">
           <button
             type="button"
             onClick={() => setShowSessions(true)}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-600 hover:bg-zinc-100 lg:hidden"
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800 lg:hidden"
             aria-label="Open conversations"
           >
             <Menu className="h-4.5 w-4.5" />
           </button>
           <div className="min-w-0 flex-1">
-            <h2 className="truncate text-sm font-semibold text-zinc-900">
+            <h2 className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
               {session?.title ?? (activeId ? "Untitled chat" : "New chat")}
             </h2>
-            <p className="truncate text-xs text-zinc-400">
+            <p className="truncate text-xs text-zinc-400 dark:text-zinc-500">
               {session?.language
                 ? `Responding in ${LANG_LABELS[session.language as DetectedLanguage] ?? session.language}`
                 : "EduVoice AI tutor"}
@@ -337,7 +337,7 @@ export function ChatUI() {
             <button
               type="button"
               onClick={() => handleDelete(activeId)}
-              className="rounded-lg p-2 text-zinc-400 transition-colors hover:bg-red-50 hover:text-red-500"
+              className="rounded-lg p-2 text-zinc-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10 dark:hover:text-red-400"
               aria-label="Delete chat"
             >
               <Trash2 className="h-4 w-4" />
@@ -361,13 +361,13 @@ export function ChatUI() {
             </div>
           ) : messages.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center px-6 text-center">
-              <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-50 to-fuchsia-50 ring-1 ring-indigo-100">
-                <Sparkles className="h-6 w-6 text-indigo-600" />
+              <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-50 to-fuchsia-50 ring-1 ring-indigo-100 dark:from-indigo-500/10 dark:to-fuchsia-500/10 dark:ring-indigo-500/30">
+                <Sparkles className="h-6 w-6 text-indigo-600 dark:text-indigo-400" />
               </span>
-              <h3 className="mt-4 text-lg font-semibold tracking-tight text-zinc-900">
+              <h3 className="mt-4 text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
                 Ask anything, by voice or text
               </h3>
-              <p className="mt-2 max-w-md text-sm leading-6 text-zinc-500">
+              <p className="mt-2 max-w-md text-sm leading-6 text-zinc-500 dark:text-zinc-400">
                 EduVoice answers in English, Filipino, or Cebuano — whichever
                 you speak. Try one of these:
               </p>
@@ -377,7 +377,7 @@ export function ChatUI() {
                     key={s}
                     type="button"
                     onClick={() => setComposer(s)}
-                    className="rounded-full border border-zinc-200 bg-white px-3.5 py-2 text-xs font-medium text-zinc-600 shadow-sm transition-all hover:border-indigo-200 hover:text-indigo-700"
+                    className="rounded-full border border-zinc-200 bg-white px-3.5 py-2 text-xs font-medium text-zinc-600 shadow-sm transition-all hover:border-indigo-200 hover:text-indigo-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:border-indigo-500/40 dark:hover:text-indigo-300"
                   >
                     {s}
                   </button>
@@ -403,12 +403,12 @@ export function ChatUI() {
                       {(lang && lang !== "en") || (tone && tone !== "neutral") ? (
                         <div className="mt-1.5 flex flex-wrap justify-end gap-1.5">
                           {lang && lang !== "en" && (
-                            <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-600 ring-1 ring-indigo-100">
+                            <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-600 ring-1 ring-indigo-100 dark:bg-indigo-500/10 dark:text-indigo-300 dark:ring-indigo-500/30">
                               {LANG_LABELS[lang]} detected
                             </span>
                           )}
                           {tone && TONE_LABELS[tone] && (
-                            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-amber-100">
+                            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/30">
                               {TONE_LABELS[tone]}
                             </span>
                           )}
@@ -425,7 +425,7 @@ export function ChatUI() {
                     EV
                   </span>
                   <div className="min-w-0 max-w-[85%] sm:max-w-[75%]">
-                    <div className="rounded-2xl rounded-tl-md border border-zinc-100 bg-zinc-50 px-4 py-2.5 text-sm leading-6 text-zinc-700">
+                    <div className="rounded-2xl rounded-tl-md border border-zinc-100 bg-zinc-50 px-4 py-2.5 text-sm leading-6 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
                       <p className="whitespace-pre-wrap break-words">{m.content}</p>
                     </div>
                     {ttsSupported && (
@@ -440,7 +440,7 @@ export function ChatUI() {
                           "mt-1.5 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors",
                           isSpeaking
                             ? "bg-indigo-600 text-white"
-                            : "bg-zinc-100 text-zinc-500 hover:bg-indigo-50 hover:text-indigo-600"
+                            : "bg-zinc-100 text-zinc-500 hover:bg-indigo-50 hover:text-indigo-600 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-indigo-500/10 dark:hover:text-indigo-300"
                         )}
                       >
                         {isSpeaking ? (
@@ -462,7 +462,7 @@ export function ChatUI() {
               <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-xs font-semibold text-white shadow-sm">
                 EV
               </span>
-              <div className="flex h-8 items-end gap-1 rounded-2xl rounded-tl-md border border-zinc-100 bg-zinc-50 px-4 py-2">
+              <div className="flex h-8 items-end gap-1 rounded-2xl rounded-tl-md border border-zinc-100 bg-zinc-50 px-4 py-2 dark:border-zinc-700 dark:bg-zinc-800">
                 {[0, 1, 2, 3, 4].map((i) => (
                   <span
                     key={i}
@@ -483,12 +483,12 @@ export function ChatUI() {
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
-              className="mx-4 mb-2 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800"
+              className="mx-4 mb-2 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
             >
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
               <div className="min-w-0 flex-1">
                 <p className="font-semibold">Could not reach the AI tutor</p>
-                <p className="mt-0.5 line-clamp-2 break-words text-amber-700">
+                <p className="mt-0.5 line-clamp-2 break-words text-amber-700 dark:text-amber-300">
                   {error}
                 </p>
               </div>
@@ -507,7 +507,7 @@ export function ChatUI() {
         </AnimatePresence>
 
         {/* Composer */}
-        <div className="border-t border-zinc-100 px-4 py-3">
+        <div className="border-t border-zinc-100 px-4 py-3 dark:border-zinc-800">
           {/* Mode pills */}
           <div className="mb-2.5 flex flex-wrap gap-1.5">
             {chatModes.map((m) => {
@@ -522,7 +522,7 @@ export function ChatUI() {
                     "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
                     active
                       ? "bg-indigo-600 text-white shadow-sm"
-                      : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+                      : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
                   )}
                 >
                   <m.icon className="h-3.5 w-3.5" />
@@ -533,7 +533,7 @@ export function ChatUI() {
           </div>
 
           <div className="flex items-end gap-2">
-            <div className="min-w-0 flex-1 rounded-2xl border border-zinc-200 bg-white px-3.5 py-2 focus-within:border-indigo-300">
+            <div className="min-w-0 flex-1 rounded-2xl border border-zinc-200 bg-white px-3.5 py-2 focus-within:border-indigo-300 dark:border-zinc-700 dark:bg-zinc-800 dark:focus-within:border-indigo-500">
               <textarea
                 value={composer}
                 onChange={(e) => setComposer(e.target.value)}
@@ -549,7 +549,7 @@ export function ChatUI() {
                     ? "Listening…"
                     : "Ask EduVoice anything… (Enter to send)"
                 }
-                className="max-h-32 w-full resize-none bg-transparent text-sm leading-6 text-zinc-800 outline-none placeholder:text-zinc-400"
+                className="max-h-32 w-full resize-none bg-transparent text-sm leading-6 text-zinc-800 outline-none placeholder:text-zinc-400 dark:text-zinc-100 dark:placeholder:text-zinc-500"
               />
               <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
                 {/* Language pills */}
@@ -562,8 +562,8 @@ export function ChatUI() {
                       className={cn(
                         "rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide transition-colors",
                         inputLang === l
-                          ? "bg-indigo-100 text-indigo-700"
-                          : "text-zinc-400 hover:text-zinc-600"
+                          ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300"
+                          : "text-zinc-400 hover:text-zinc-600 dark:text-zinc-500 dark:hover:text-zinc-300"
                       )}
                     >
                       {l === "en" ? "EN" : l === "fil" ? "FIL" : "CEB"}
@@ -571,7 +571,7 @@ export function ChatUI() {
                   ))}
                 </div>
                 {interim && listening && (
-                  <p className="truncate text-xs italic text-zinc-400">
+                  <p className="truncate text-xs italic text-zinc-400 dark:text-zinc-500">
                     {interim}
                   </p>
                 )}
@@ -591,7 +591,7 @@ export function ChatUI() {
                 "flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-all",
                 listening
                   ? "bg-red-500 text-white shadow-md shadow-red-500/30"
-                  : "bg-zinc-100 text-zinc-600 hover:bg-indigo-50 hover:text-indigo-600",
+                  : "bg-zinc-100 text-zinc-600 hover:bg-indigo-50 hover:text-indigo-600 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-indigo-500/10 dark:hover:text-indigo-300",
                 !voiceSupported && "cursor-not-allowed opacity-40"
               )}
             >

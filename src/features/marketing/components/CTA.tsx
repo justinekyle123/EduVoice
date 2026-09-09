@@ -6,7 +6,7 @@ import { ArrowRight, Sparkles } from "lucide-react";
 
 export function CTA() {
   return (
-    <section id="cta" className="scroll-mt-20 bg-white px-4 pb-24 sm:px-6">
+    <section id="cta" className="scroll-mt-20 bg-white px-4 pb-24 dark:bg-zinc-950 sm:px-6">
       <motion.div
         initial={{ opacity: 0, y: 32 }}
         whileInView={{ opacity: 1, y: 0 }}
