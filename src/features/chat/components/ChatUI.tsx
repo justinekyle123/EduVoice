@@ -17,6 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import { chatModes, type ChatMode } from "../lib/modes";
 import { speechLangFor, type DetectedLanguage } from "../lib/detect";
+import { TTS_VOICES, DEFAULT_TTS_VOICE } from "../lib/voices";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import { useSpeechSynthesis } from "../hooks/useSpeechSynthesis";
 import {
@@ -65,6 +66,8 @@ export function ChatUI() {
   const [composer, setComposer] = useState("");
   const [inputLang, setInputLang] = useState<DetectedLanguage>("en");
   const [mode, setMode] = useState<ChatMode>("chat");
+  // Selected Gemini TTS voice, persisted so the choice sticks across visits.
+  const [ttsVoice, setTtsVoice] = useState<string>(DEFAULT_TTS_VOICE);
   const [showSessions, setShowSessions] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
@@ -84,18 +87,28 @@ export function ChatUI() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const list = await getChatSessions();
-      if (cancelled) return;
-      setSessions(list);
-      if (list.length > 0) {
-        const res = await getChatMessages(list[0].id);
-        if (cancelled || !res) return;
-        setActiveId(list[0].id);
-        setSession(res.session);
-        setMode(res.session.mode);
-        setMessages(res.messages);
+      try {
+        const list = await getChatSessions();
+        if (cancelled) return;
+        setSessions(list);
+        if (list.length > 0) {
+          const res = await getChatMessages(list[0].id);
+          if (cancelled || !res) return;
+          setActiveId(list[0].id);
+          setSession(res.session);
+          setMode(res.session.mode);
+          setMessages(res.messages);
+        }
+      } catch (err) {
+        // A failed server action (e.g. missing DATABASE_URL or Gemini key in
+        // the deployment environment) should surface in the error banner,
+        // not leave the chat stuck on the loading spinner forever.
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load chats");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-      setLoading(false);
     })();
     return () => {
       cancelled = true;
@@ -107,20 +120,39 @@ export function ChatUI() {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, sending]);
 
+  // Restore the saved voice choice and keep it in sync with localStorage.
+  useEffect(() => {
+    const saved = window.localStorage.getItem("ttsVoice");
+    if (saved && TTS_VOICES.some((v) => v.name === saved)) {
+      setTtsVoice(saved);
+    }
+  }, []);
+  useEffect(() => {
+    window.localStorage.setItem("ttsVoice", ttsVoice);
+  }, [ttsVoice]);
+
   const refreshSessions = useCallback(async () => {
-    const list = await getChatSessions();
-    setSessions(list);
+    try {
+      const list = await getChatSessions();
+      setSessions(list);
+    } catch {
+      // Best-effort refresh — keep the current list on failure.
+    }
   }, []);
 
   async function openSession(id: string) {
     setActiveId(id);
     setShowSessions(false);
     setError(null);
-    const res = await getChatMessages(id);
-    if (!res) return;
-    setSession(res.session);
-    setMode(res.session.mode);
-    setMessages(res.messages);
+    try {
+      const res = await getChatMessages(id);
+      if (!res) return;
+      setSession(res.session);
+      setMode(res.session.mode);
+      setMessages(res.messages);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load chat");
+    }
   }
 
   function startNewChat() {
@@ -151,24 +183,31 @@ export function ChatUI() {
     setComposer("");
     stopSpeaking();
 
-    const res = await sendChatMessage({ sessionId: activeId, mode, content: text });
+    try {
+      const res = await sendChatMessage({ sessionId: activeId, mode, content: text });
 
-    if (res.error) setError(res.error);
-    setMessages((prev) => [
-      ...prev,
-      res.userMessage,
-      ...(res.assistantMessage ? [res.assistantMessage] : []),
-    ]);
-    if (res.createdSession) {
-      setSession({
-        ...res.createdSession,
-        mode,
-        language: res.language,
-        title: text.length > 60 ? `${text.slice(0, 60).trimEnd()}…` : text,
-      });
+      if (res.error) setError(res.error);
+      setMessages((prev) => [
+        ...prev,
+        res.userMessage,
+        ...(res.assistantMessage ? [res.assistantMessage] : []),
+      ]);
+      if (res.createdSession) {
+        setSession({
+          ...res.createdSession,
+          mode,
+          language: res.language,
+          title: text.length > 60 ? `${text.slice(0, 60).trimEnd()}…` : text,
+        });
+      }
+      setActiveId(res.sessionId);
+    } catch (err) {
+      // A thrown server action (e.g. DB failure) must surface here instead of
+      // leaving the composer stuck in the sending state.
+      setError(err instanceof Error ? err.message : "Failed to send message");
+    } finally {
+      setSending(false);
     }
-    setActiveId(res.sessionId);
-    setSending(false);
     void refreshSessions();
   }
 
@@ -434,7 +473,7 @@ export function ChatUI() {
                         onClick={() =>
                           isSpeaking
                             ? stopSpeaking()
-                            : speak(m.id, m.content, speechLangFor(session?.language as DetectedLanguage | undefined ?? "en"))
+                            : speak(m.id, m.content, speechLangFor(session?.language as DetectedLanguage | undefined ?? "en"), ttsVoice)
                         }
                         className={cn(
                           "mt-1.5 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors",
@@ -508,28 +547,45 @@ export function ChatUI() {
 
         {/* Composer */}
         <div className="border-t border-zinc-100 px-4 py-3">
-          {/* Mode pills */}
-          <div className="mb-2.5 flex flex-wrap gap-1.5">
-            {chatModes.map((m) => {
-              const active = m.id === mode;
-              return (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => handleModeChange(m.id)}
-                  title={m.description}
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
-                    active
-                      ? "bg-indigo-600 text-white shadow-sm"
-                      : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
-                  )}
-                >
-                  <m.icon className="h-3.5 w-3.5" />
-                  {m.label}
-                </button>
-              );
-            })}
+          {/* Mode pills + voice picker */}
+          <div className="mb-2.5 flex flex-wrap items-center justify-between gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
+              {chatModes.map((m) => {
+                const active = m.id === mode;
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => handleModeChange(m.id)}
+                    title={m.description}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+                      active
+                        ? "bg-indigo-600 text-white shadow-sm"
+                        : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+                    )}
+                  >
+                    <m.icon className="h-3.5 w-3.5" />
+                    {m.label}
+                  </button>
+                );
+              })}
+            </div>
+            <label className="inline-flex items-center gap-1.5">
+              <Volume2 className="h-3.5 w-3.5 text-zinc-400" />
+              <select
+                value={ttsVoice}
+                onChange={(e) => setTtsVoice(e.target.value)}
+                aria-label="Tutor voice"
+                className="max-w-[10rem] rounded-full border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-600 outline-none transition-colors focus:border-indigo-300"
+              >
+                {TTS_VOICES.map((v) => (
+                  <option key={v.name} value={v.name}>
+                    {v.name} — {v.description}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
 
           <div className="flex items-end gap-2">

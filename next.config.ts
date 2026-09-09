@@ -14,13 +14,25 @@ const tunnelOrigins = [
   "*.devtunnels.ms", // VS Code Tunnels
 ];
 
+// VS Code's "Simple Browser" preview loads the app at http://localhost:<port>
+// while the Codespaces proxy forwards those requests with `x-forwarded-host`
+// set to the public *.app.github.dev URL. The server-action CSRF check compares
+// the browser `Origin` against that forwarded host, so the localhost origin
+// must be allowed explicitly (remotePatterns syntax can't wildcard the port).
+const localDevOrigins = [
+  "localhost:3000",
+  "127.0.0.1:3000",
+  "localhost:3001", // when 3000 is taken, next dev auto-increments
+  "127.0.0.1:3001",
+];
+
 const nextConfig: NextConfig = {
-  allowedDevOrigins: tunnelOrigins,
+  allowedDevOrigins: [...tunnelOrigins, ...localDevOrigins],
   experimental:
     process.env.NODE_ENV === "development"
       ? {
           serverActions: {
-            allowedOrigins: tunnelOrigins,
+            allowedOrigins: [...tunnelOrigins, ...localDevOrigins],
           },
         }
       : undefined,
