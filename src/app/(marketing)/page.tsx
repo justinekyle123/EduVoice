@@ -8,7 +8,7 @@ import { CTA } from "@/features/marketing/components/CTA";
 
 export default function MarketingPage() {
   return (
-    <main className="flex min-h-full flex-col bg-white">
+    <main className="flex min-h-full flex-col bg-white dark:bg-zinc-950">
       <Navbar />
       <Hero />
       <Features />

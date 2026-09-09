@@ -19,13 +19,24 @@ export const metadata: Metadata = {
     "EduVoice is your AI learning companion for students — ask questions by voice, get spoken answers, generate quizzes from your notes, and learn hands-free in English, Filipino, or Cebuano.",
 };
 
+const themeScript = `(function () {
+  var mql = window.matchMedia("(prefers-color-scheme: dark)");
+  function applyTheme() {
+    document.documentElement.classList.toggle("dark", mql.matches);
+  }
+  applyTheme();
+  mql.addEventListener("change", applyTheme);
+})();`;
+
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
+      suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} h-full scroll-smooth antialiased`}
     >
       <body className="min-h-full flex flex-col">
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
         <ClerkProvider>{children}</ClerkProvider>
       </body>
     </html>
