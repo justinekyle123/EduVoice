@@ -425,6 +425,20 @@ export function ChatUI() {
                     EV
                   </span>
                   <div className="min-w-0 max-w-[85%] sm:max-w-[75%]">
+                    {m.provider && (
+                      <span className="mb-1.5 inline-flex items-center gap-1.5 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-500 ring-1 ring-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:ring-zinc-700">
+                        <span
+                          className={cn(
+                            "h-1.5 w-1.5 rounded-full",
+                            m.provider === "groq"
+                              ? "bg-emerald-500"
+                              : "bg-indigo-500"
+                          )}
+                        />
+                        {m.provider.charAt(0).toUpperCase() +
+                          m.provider.slice(1)}
+                      </span>
+                    )}
                     <div className="rounded-2xl rounded-tl-md border border-zinc-100 bg-zinc-50 px-4 py-2.5 text-sm leading-6 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
                       <p className="whitespace-pre-wrap break-words">{m.content}</p>
                     </div>
