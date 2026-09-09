@@ -560,7 +560,7 @@ export function ChatUI() {
         </AnimatePresence>
 
         {/* Composer */}
-        <div className="border-t border-zinc-100 px-4 py-3">
+        <div className="border-t border-zinc-100 px-4 py-3 dark:border-zinc-800">
           {/* Mode pills + voice picker */}
           <div className="mb-2.5 flex flex-wrap items-center justify-between gap-1.5">
             <div className="flex flex-wrap gap-1.5">
@@ -576,7 +576,7 @@ export function ChatUI() {
                       "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
                       active
                         ? "bg-indigo-600 text-white shadow-sm"
-                        : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+                        : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
                     )}
                   >
                     <m.icon className="h-3.5 w-3.5" />
@@ -591,7 +591,7 @@ export function ChatUI() {
                 value={ttsVoice}
                 onChange={(e) => setTtsVoice(e.target.value)}
                 aria-label="Tutor voice"
-                className="max-w-[10rem] rounded-full border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-600 outline-none transition-colors focus:border-indigo-300"
+                className="max-w-[10rem] rounded-full border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-600 outline-none transition-colors focus:border-indigo-300 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
               >
                 {TTS_VOICES.map((v) => (
                   <option key={v.name} value={v.name}>
@@ -600,29 +600,6 @@ export function ChatUI() {
                 ))}
               </select>
             </label>
-        <div className="border-t border-zinc-100 px-4 py-3 dark:border-zinc-800">
-          {/* Mode pills */}
-          <div className="mb-2.5 flex flex-wrap gap-1.5">
-            {chatModes.map((m) => {
-              const active = m.id === mode;
-              return (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => handleModeChange(m.id)}
-                  title={m.description}
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
-                    active
-                      ? "bg-indigo-600 text-white shadow-sm"
-                      : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
-                  )}
-                >
-                  <m.icon className="h-3.5 w-3.5" />
-                  {m.label}
-                </button>
-              );
-            })}
           </div>
 
           <div className="flex items-end gap-2">
