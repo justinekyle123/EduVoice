@@ -5,6 +5,23 @@ import { auth, currentUser } from "@clerk/nextjs/server";
 import { db } from "@/lib/db";
 import { chatMessages, chatSessions } from "@/lib/db/schema";
 import { getUserByClerkId, upsertUser } from "@/features/auth/server/users";
+import { generateText } from "@/lib/ai/gemini";
+import { instructionFor, type ChatMode } from "../lib/modes";
+import { detectLanguage, detectTone } from "../lib/detect";
+
+// The chat tables key rows by the Postgres `users.id` (uuid), but Clerk's
+// `auth()` returns the Clerk user id (e.g. "user_…"). Resolve the Clerk id to
+// the app's user row, creating it on demand if the Clerk webhook hasn't synced
+// the user yet (same pattern as the dashboard).
+async function resolveDbUser(clerkId: string) {
+  const user = await getUserByClerkId(clerkId);
+  if (user) return user;
+  const clerkUser = await currentUser();
+  return upsertUser({
+    clerkId,
+    email: clerkUser?.emailAddresses[0]?.emailAddress ?? "",
+    name: clerkUser?.fullName ?? clerkUser?.username ?? null,
+  });
 import { generateText } from "@/lib/ai";
 import { instructionFor, type ChatMode } from "../lib/modes";
 import { detectLanguage, detectTone } from "../lib/detect";
@@ -33,10 +50,13 @@ export async function getChatSessions() {
   if (!clerkId) return [];
   const userId = await requireUserId(clerkId);
 
+  const user = await resolveDbUser(userId);
+  if (!user) return [];
+
   const sessions = await db
     .select()
     .from(chatSessions)
-    .where(eq(chatSessions.userId, userId))
+    .where(eq(chatSessions.userId, user.id))
     .orderBy(desc(chatSessions.updatedAt));
 
   // One extra query: latest message per session for the list preview.
@@ -76,10 +96,13 @@ export async function getChatMessages(sessionId: string) {
   if (!clerkId) return null;
   const userId = await requireUserId(clerkId);
 
+  const user = await resolveDbUser(userId);
+  if (!user) return null;
+
   const [session] = await db
     .select()
     .from(chatSessions)
-    .where(and(eq(chatSessions.id, sessionId), eq(chatSessions.userId, userId)));
+    .where(and(eq(chatSessions.id, sessionId), eq(chatSessions.userId, user.id)));
 
   if (!session) return null;
 
@@ -105,6 +128,9 @@ export async function sendChatMessage(input: {
   if (!clerkId) throw new Error("Not authenticated");
   const userId = await requireUserId(clerkId);
 
+  const user = await resolveDbUser(userId);
+  if (!user) throw new Error("Not authenticated");
+
   const content = input.content.trim();
   if (!content) throw new Error("Message cannot be empty");
 
@@ -119,12 +145,12 @@ export async function sendChatMessage(input: {
     const [session] = await db
       .select({ id: chatSessions.id })
       .from(chatSessions)
-      .where(and(eq(chatSessions.id, sessionId), eq(chatSessions.userId, userId)));
+      .where(and(eq(chatSessions.id, sessionId), eq(chatSessions.userId, user.id)));
     if (!session) throw new Error("Session not found");
   } else {
     const [created] = await db
       .insert(chatSessions)
-      .values({ userId, mode: input.mode, language })
+      .values({ userId: user.id, mode: input.mode, language })
       .returning();
     sessionId = created.id;
     createdSession = created;
@@ -194,10 +220,13 @@ export async function retryAssistantMessage(sessionId: string, mode: ChatMode) {
   if (!clerkId) throw new Error("Not authenticated");
   const userId = await requireUserId(clerkId);
 
+  const user = await resolveDbUser(userId);
+  if (!user) throw new Error("Not authenticated");
+
   const [existing] = await db
     .select({ id: chatSessions.id })
     .from(chatSessions)
-    .where(and(eq(chatSessions.id, sessionId), eq(chatSessions.userId, userId)));
+    .where(and(eq(chatSessions.id, sessionId), eq(chatSessions.userId, user.id)));
   if (!existing) throw new Error("Session not found");
 
   const historyRows = await db
@@ -236,10 +265,13 @@ export async function updateChatSessionMode(sessionId: string, mode: ChatMode) {
   if (!clerkId) return;
   const userId = await requireUserId(clerkId);
 
+  const user = await resolveDbUser(userId);
+  if (!user) return;
+
   await db
     .update(chatSessions)
     .set({ mode, updatedAt: new Date() })
-    .where(and(eq(chatSessions.id, sessionId), eq(chatSessions.userId, userId)));
+    .where(and(eq(chatSessions.id, sessionId), eq(chatSessions.userId, user.id)));
 }
 
 export async function deleteChatSession(sessionId: string) {
@@ -247,7 +279,10 @@ export async function deleteChatSession(sessionId: string) {
   if (!clerkId) return;
   const userId = await requireUserId(clerkId);
 
+  const user = await resolveDbUser(userId);
+  if (!user) return;
+
   await db
     .delete(chatSessions)
-    .where(and(eq(chatSessions.id, sessionId), eq(chatSessions.userId, userId)));
+    .where(and(eq(chatSessions.id, sessionId), eq(chatSessions.userId, user.id)));
 }
