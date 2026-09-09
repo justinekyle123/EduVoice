@@ -22,7 +22,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-white shadow-md shadow-indigo-500/25">
           <GraduationCap className="h-4.5 w-4.5" />
         </span>
-        <span className="text-lg font-semibold tracking-tight text-zinc-900">
+        <span className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
           {siteConfig.name}
         </span>
       </Link>
@@ -40,8 +40,8 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
               className={cn(
                 "group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors duration-200",
                 active
-                  ? "bg-indigo-50 text-indigo-700"
-                  : "text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900"
+                  ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                  : "text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
               )}
             >
               <item.icon
@@ -49,7 +49,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
                   "h-4.5 w-4.5 shrink-0 transition-colors",
                   active
                     ? "text-indigo-600"
-                    : "text-zinc-400 group-hover:text-zinc-600"
+                    : "text-zinc-400 group-hover:text-zinc-600 dark:text-zinc-500 dark:group-hover:text-zinc-300"
                 )}
               />
               {item.label}
@@ -58,14 +58,14 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         })}
       </nav>
 
-      <div className="border-t border-zinc-200 p-3">
+      <div className="border-t border-zinc-200 p-3 dark:border-zinc-800">
         <div className="flex items-center gap-3 rounded-xl px-2 py-2">
           <UserButton />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium text-zinc-900">
+            <p className="truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">
               My account
             </p>
-            <p className="truncate text-xs text-zinc-500">Signed in via Clerk</p>
+            <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">Signed in via Clerk</p>
           </div>
         </div>
       </div>
@@ -82,9 +82,9 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <div className="flex min-h-screen bg-zinc-50">
+    <div className="flex min-h-screen bg-zinc-50 dark:bg-zinc-950">
       {/* Desktop sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 border-r border-zinc-200/70 bg-white lg:block">
+      <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 border-r border-zinc-200/70 bg-white dark:border-zinc-800 dark:bg-zinc-900 lg:block">
         <SidebarContent />
       </aside>
 
@@ -105,12 +105,12 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
               animate={{ x: 0 }}
               exit={{ x: "-100%" }}
               transition={{ type: "spring", damping: 30, stiffness: 300 }}
-              className="fixed inset-y-0 left-0 z-50 w-72 bg-white shadow-2xl lg:hidden"
+              className="fixed inset-y-0 left-0 z-50 w-72 bg-white shadow-2xl dark:bg-zinc-900 lg:hidden"
             >
               <button
                 type="button"
                 onClick={() => setOpen(false)}
-                className="absolute right-3 top-4 flex h-8 w-8 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100"
+                className="absolute right-3 top-4 flex h-8 w-8 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
                 aria-label="Close menu"
               >
                 <X className="h-5 w-5" />
@@ -123,16 +123,16 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
 
       <div className="flex min-w-0 flex-1 flex-col lg:pl-64">
         {/* Topbar */}
-        <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-zinc-200/70 bg-white/80 px-4 backdrop-blur-xl sm:px-6">
+        <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-zinc-200/70 bg-white/80 px-4 backdrop-blur-xl dark:border-zinc-800 dark:bg-zinc-950/80 sm:px-6">
           <button
             type="button"
             onClick={() => setOpen(true)}
-            className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-600 transition-colors hover:bg-zinc-100 lg:hidden"
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-600 transition-colors hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800 lg:hidden"
             aria-label="Open menu"
           >
             <Menu className="h-5 w-5" />
           </button>
-          <h1 className="text-base font-semibold tracking-tight text-zinc-900">
+          <h1 className="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
             {current?.label ?? "Dashboard"}
           </h1>
           <div className="ml-auto">

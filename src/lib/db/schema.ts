@@ -84,6 +84,7 @@ export const chatMessages = pgTable(
     content: text("content").notNull(),
     language: text("language"),
     tone: text("tone"),
+    provider: text("provider"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [index("chat_messages_session_idx").on(table.sessionId, table.createdAt)]

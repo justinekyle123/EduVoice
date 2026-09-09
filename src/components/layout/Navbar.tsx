@@ -27,7 +27,7 @@ export function Navbar() {
       className={cn(
         "fixed inset-x-0 top-0 z-50 transition-all duration-300",
         scrolled
-          ? "border-b border-zinc-200/70 bg-white/80 shadow-sm shadow-zinc-900/[0.03] backdrop-blur-xl"
+          ? "border-b border-zinc-200/70 bg-white/80 shadow-sm shadow-zinc-900/[0.03] backdrop-blur-xl dark:border-zinc-800/70 dark:bg-zinc-950/80"
           : "bg-transparent"
       )}
     >
@@ -36,7 +36,7 @@ export function Navbar() {
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-white shadow-md shadow-indigo-500/25 transition-transform duration-300 group-hover:scale-105">
             <GraduationCap className="h-4.5 w-4.5" />
           </span>
-          <span className="text-lg font-semibold tracking-tight text-zinc-900">
+          <span className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
             {siteConfig.name}
           </span>
         </a>
@@ -46,7 +46,7 @@ export function Navbar() {
             <a
               key={link.href}
               href={link.href}
-              className="text-sm font-medium text-zinc-600 transition-colors duration-200 hover:text-zinc-900"
+              className="text-sm font-medium text-zinc-600 transition-colors duration-200 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
             >
               {link.label}
             </a>
@@ -54,13 +54,13 @@ export function Navbar() {
           <Show when="signed-out">
             <Link
               href="/sign-in"
-              className="text-sm font-medium text-zinc-600 transition-colors duration-200 hover:text-zinc-900"
+              className="text-sm font-medium text-zinc-600 transition-colors duration-200 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
             >
               Sign in
             </Link>
             <Link
               href="/sign-up"
-              className="rounded-full bg-zinc-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all duration-200 hover:bg-zinc-700 hover:shadow-md"
+              className="rounded-full bg-zinc-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all duration-200 hover:bg-zinc-700 hover:shadow-md dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200"
             >
               Get started
             </Link>
@@ -68,7 +68,7 @@ export function Navbar() {
           <Show when="signed-in">
             <Link
               href="/dashboard"
-              className="text-sm font-medium text-zinc-600 transition-colors duration-200 hover:text-zinc-900"
+              className="text-sm font-medium text-zinc-600 transition-colors duration-200 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
             >
               Dashboard
             </Link>
@@ -79,7 +79,7 @@ export function Navbar() {
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-700 transition-colors hover:bg-zinc-100 md:hidden"
+          className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-700 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800 md:hidden"
           aria-label="Toggle menu"
         >
           {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
@@ -93,7 +93,7 @@ export function Navbar() {
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.25, ease: "easeOut" }}
-            className="overflow-hidden border-b border-zinc-200/70 bg-white/95 backdrop-blur-xl md:hidden"
+            className="overflow-hidden border-b border-zinc-200/70 bg-white/95 backdrop-blur-xl dark:border-zinc-800/70 dark:bg-zinc-950/95 md:hidden"
           >
             <div className="flex flex-col gap-1 px-4 py-4">
               {navLinks.map((link) => (
@@ -101,7 +101,7 @@ export function Navbar() {
                   key={link.href}
                   href={link.href}
                   onClick={() => setOpen(false)}
-                  className="rounded-lg px-3 py-2.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100"
+                  className="rounded-lg px-3 py-2.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
                 >
                   {link.label}
                 </a>
@@ -110,14 +110,14 @@ export function Navbar() {
                 <Link
                   href="/sign-in"
                   onClick={() => setOpen(false)}
-                  className="rounded-lg px-3 py-2.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100"
+                  className="rounded-lg px-3 py-2.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
                 >
                   Sign in
                 </Link>
                 <Link
                   href="/sign-up"
                   onClick={() => setOpen(false)}
-                  className="mt-2 rounded-full bg-zinc-900 px-4 py-2.5 text-center text-sm font-medium text-white"
+                  className="mt-2 rounded-full bg-zinc-900 px-4 py-2.5 text-center text-sm font-medium text-white dark:bg-white dark:text-zinc-900"
                 >
                   Get started
                 </Link>
@@ -126,7 +126,7 @@ export function Navbar() {
                 <Link
                   href="/dashboard"
                   onClick={() => setOpen(false)}
-                  className="rounded-lg px-3 py-2.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100"
+                  className="rounded-lg px-3 py-2.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
                 >
                   Dashboard
                 </Link>

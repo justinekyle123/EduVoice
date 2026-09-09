@@ -22,6 +22,23 @@ async function resolveDbUser(clerkId: string) {
     email: clerkUser?.emailAddresses[0]?.emailAddress ?? "",
     name: clerkUser?.fullName ?? clerkUser?.username ?? null,
   });
+import { generateText } from "@/lib/ai";
+import { instructionFor, type ChatMode } from "../lib/modes";
+import { detectLanguage, detectTone } from "../lib/detect";
+
+// Resolve the Clerk user id to the internal users.id (uuid) used by the chat
+// tables, creating the users row on first visit if needed.
+async function requireUserId(clerkId: string): Promise<string> {
+  let user = await getUserByClerkId(clerkId);
+  if (!user) {
+    const clerkUser = await currentUser();
+    user = await upsertUser({
+      clerkId,
+      email: clerkUser?.emailAddresses[0]?.emailAddress ?? "",
+      name: clerkUser?.fullName ?? clerkUser?.username ?? null,
+    });
+  }
+  return user.id;
 }
 
 // ---------------------------------------------------------------------------
@@ -29,8 +46,9 @@ async function resolveDbUser(clerkId: string) {
 // ---------------------------------------------------------------------------
 
 export async function getChatSessions() {
-  const { userId } = await auth();
-  if (!userId) return [];
+  const { userId: clerkId } = await auth();
+  if (!clerkId) return [];
+  const userId = await requireUserId(clerkId);
 
   const user = await resolveDbUser(userId);
   if (!user) return [];
@@ -74,8 +92,9 @@ export async function getChatSessions() {
 // ---------------------------------------------------------------------------
 
 export async function getChatMessages(sessionId: string) {
-  const { userId } = await auth();
-  if (!userId) return null;
+  const { userId: clerkId } = await auth();
+  if (!clerkId) return null;
+  const userId = await requireUserId(clerkId);
 
   const user = await resolveDbUser(userId);
   if (!user) return null;
@@ -105,8 +124,9 @@ export async function sendChatMessage(input: {
   mode: ChatMode;
   content: string;
 }) {
-  const { userId } = await auth();
-  if (!userId) throw new Error("Not authenticated");
+  const { userId: clerkId } = await auth();
+  if (!clerkId) throw new Error("Not authenticated");
+  const userId = await requireUserId(clerkId);
 
   const user = await resolveDbUser(userId);
   if (!user) throw new Error("Not authenticated");
@@ -172,19 +192,19 @@ export async function sendChatMessage(input: {
   let error: string | null = null;
 
   try {
-    const reply = await generateText({
+    const { text: reply, provider } = await generateText({
       prompt: content,
       systemInstruction: instructionFor(input.mode),
       history,
     });
     const [saved] = await db
       .insert(chatMessages)
-      .values({ sessionId, role: "assistant", content: reply })
+      .values({ sessionId, role: "assistant", content: reply, provider })
       .returning();
     assistantMessage = saved;
   } catch (err) {
-    error = err instanceof Error ? err.message : "Gemini request failed";
-    console.error("[chat] Gemini request failed:", error);
+    error = err instanceof Error ? err.message : "AI request failed";
+    console.error("[chat] AI request failed:", error);
   }
 
   return { sessionId, createdSession, userMessage, assistantMessage, error, language };
@@ -196,8 +216,9 @@ export async function sendChatMessage(input: {
 
 /** Re-run the AI for the last user message (used when the first call failed). */
 export async function retryAssistantMessage(sessionId: string, mode: ChatMode) {
-  const { userId } = await auth();
-  if (!userId) throw new Error("Not authenticated");
+  const { userId: clerkId } = await auth();
+  if (!clerkId) throw new Error("Not authenticated");
+  const userId = await requireUserId(clerkId);
 
   const user = await resolveDbUser(userId);
   if (!user) throw new Error("Not authenticated");
@@ -225,7 +246,7 @@ export async function retryAssistantMessage(sessionId: string, mode: ChatMode) {
       parts: [{ text: m.content }],
     }));
 
-  const reply = await generateText({
+  const { text: reply, provider } = await generateText({
     prompt: lastUserMsg.content,
     systemInstruction: instructionFor(mode),
     history,
@@ -233,15 +254,16 @@ export async function retryAssistantMessage(sessionId: string, mode: ChatMode) {
 
   const [saved] = await db
     .insert(chatMessages)
-    .values({ sessionId, role: "assistant", content: reply })
+    .values({ sessionId, role: "assistant", content: reply, provider })
     .returning();
 
   return saved;
 }
 
 export async function updateChatSessionMode(sessionId: string, mode: ChatMode) {
-  const { userId } = await auth();
-  if (!userId) return;
+  const { userId: clerkId } = await auth();
+  if (!clerkId) return;
+  const userId = await requireUserId(clerkId);
 
   const user = await resolveDbUser(userId);
   if (!user) return;
@@ -253,8 +275,9 @@ export async function updateChatSessionMode(sessionId: string, mode: ChatMode) {
 }
 
 export async function deleteChatSession(sessionId: string) {
-  const { userId } = await auth();
-  if (!userId) return;
+  const { userId: clerkId } = await auth();
+  if (!clerkId) return;
+  const userId = await requireUserId(clerkId);
 
   const user = await resolveDbUser(userId);
   if (!user) return;
