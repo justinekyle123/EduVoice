@@ -26,6 +26,16 @@ function getRecorderCtor(): (new () => RecognitionRecorder) | null {
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
 }
 
+export type SpeechRecognitionOptions = {
+  /**
+   * Keep one recognition session open across pauses instead of ending it at the
+   * first full stop. Long dictation (a task, its day, and its time) arrives in
+   * several breaths, so callers that buffer the transcript want this on; the
+   * chat composer appends each phrase and takes the default.
+   */
+  continuous?: boolean;
+};
+
 /**
  * Voice input via the browser Web Speech API (no API key needed).
  * Calls `onTranscript(final, interim)` as results arrive.
@@ -57,7 +67,7 @@ export function useSpeechRecognition(
   );
 
   const start = useCallback(
-    (lang: string) => {
+    (lang: string, options: SpeechRecognitionOptions = {}) => {
       const Ctor = getRecorderCtor();
       if (!Ctor) return;
       recorderRef.current?.abort();
@@ -65,7 +75,7 @@ export function useSpeechRecognition(
       const recorder = new Ctor();
       recorder.lang = lang;
       recorder.interimResults = true;
-      recorder.continuous = false;
+      recorder.continuous = options.continuous ?? false;
       recorder.onresult = (e) => {
         let finalText = "";
         let interimText = "";
@@ -91,5 +101,15 @@ export function useSpeechRecognition(
     setListening(false);
   }, []);
 
-  return { supported, listening, interim, start, stop };
+  /**
+   * End the session and drop anything not yet confirmed. Callers that have
+   * already taken what they need use this instead of `stop()`: the graceful stop
+   * can hand back one last final result, which would look like a second turn.
+   */
+  const abort = useCallback(() => {
+    recorderRef.current?.abort();
+    setListening(false);
+  }, []);
+
+  return { supported, listening, interim, start, stop, abort };
 }
