@@ -304,6 +304,22 @@ export const studyRoomMembers = pgTable(
   (table) => [unique("study_room_members_room_user").on(table.roomId, table.userId)]
 );
 
+export const roomMessages = pgTable(
+  "room_messages",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    roomId: uuid("room_id")
+      .notNull()
+      .references(() => studyRooms.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    content: text("content").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("room_messages_room_idx").on(table.roomId, table.createdAt)]
+);
+
 // ---------------------------------------------------------------------------
 // Planner & progress
 // ---------------------------------------------------------------------------
@@ -360,6 +376,7 @@ export const usersRelations = relations(users, ({ many }) => ({
   flashcardReviews: many(flashcardReviews),
   ownedRooms: many(studyRooms),
   roomMemberships: many(studyRoomMembers),
+  roomMessages: many(roomMessages),
   studyPlans: many(studyPlans),
   studySessions: many(studySessions),
 }));
@@ -442,12 +459,18 @@ export const studyRoomsRelations = relations(studyRooms, ({ one, many }) => ({
     references: [documents.id],
   }),
   members: many(studyRoomMembers),
+  messages: many(roomMessages),
   attempts: many(quizAttempts),
 }));
 
 export const studyRoomMembersRelations = relations(studyRoomMembers, ({ one }) => ({
   room: one(studyRooms, { fields: [studyRoomMembers.roomId], references: [studyRooms.id] }),
   user: one(users, { fields: [studyRoomMembers.userId], references: [users.id] }),
+}));
+
+export const roomMessagesRelations = relations(roomMessages, ({ one }) => ({
+  room: one(studyRooms, { fields: [roomMessages.roomId], references: [studyRooms.id] }),
+  user: one(users, { fields: [roomMessages.userId], references: [users.id] }),
 }));
 
 export const studyPlansRelations = relations(studyPlans, ({ one }) => ({

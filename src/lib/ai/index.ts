@@ -15,6 +15,8 @@ export type GenerateTextInput = {
   prompt: string;
   systemInstruction?: string;
   history?: Content[];
+  /** Ask for a JSON body instead of prose (see ./gemini.ts). */
+  json?: boolean;
 };
 
 export type GenerateTextResult = {

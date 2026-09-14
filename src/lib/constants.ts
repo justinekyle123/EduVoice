@@ -198,6 +198,12 @@ export const dashboardNav = [
     description: "Hands-free study to-dos and reminders captured by voice.",
   },
   {
+    href: "/dashboard/rooms",
+    label: "Study Rooms",
+    icon: Users,
+    description: "Quiz each other and compete on a shared leaderboard built from the same material.",
+  },
+  {
     href: "/dashboard/progress",
     label: "Progress",
     icon: TrendingUp,

@@ -41,6 +41,13 @@ const MAX_COOLDOWN_MS = 60 * 60 * 1000;
 /** Overloaded/unavailable upstream: usually recovers within a few seconds. */
 const BUSY_COOLDOWN_MS = 15_000;
 
+// A 503 from Google ("this model is currently experiencing high demand") is a
+// spike, not a broken key — and with a single configured key there is no other
+// account to fall back on, so one spike would otherwise end the request. Retry
+// the same key a couple of times with a short backoff before giving up.
+const BUSY_RETRIES = 2;
+const BUSY_RETRY_BASE_MS = 700;
+
 type KeyState = {
   /** Epoch ms until this key may be used again. */
   cooldownUntil: number;
@@ -177,6 +184,19 @@ export type FailureKind =
   /** Bad request, blocked content… another key would fail the same way. */
   | "fatal";
 
+/**
+ * An error raised by the pool, tagged with why it failed. Callers use `kind` to
+ * decide what to do next — notably, a spent quota is metered per model, so it is
+ * worth retrying the same request on a different model.
+ */
+export type AiFailure = Error & { kind?: FailureKind };
+
+function aiError(message: string, kind: FailureKind): AiFailure {
+  const error = new Error(message) as AiFailure;
+  error.kind = kind;
+  return error;
+}
+
 function messageOf(err: unknown): string {
   if (err instanceof Error) return err.message;
   return typeof err === "string" ? err : "";
@@ -232,6 +252,35 @@ export function retryDelayMs(err: unknown): number | null {
   return Math.min(seconds * 1000, MAX_COOLDOWN_MS);
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Attempt a request against one key, riding out a busy upstream with a short
+ * backoff. Safe to retry: every caller generates text rather than mutating
+ * anything, so a repeat costs quota and nothing else.
+ */
+async function runWithBusyRetries<T>(
+  run: (client: GoogleGenAI, key: GeminiKey) => Promise<T>,
+  client: GoogleGenAI,
+  key: GeminiKey
+): Promise<T> {
+  for (let retry = 0; ; retry += 1) {
+    try {
+      return await run(client, key);
+    } catch (err) {
+      if (classifyFailure(err) !== "busy" || retry >= BUSY_RETRIES) throw err;
+
+      const wait = BUSY_RETRY_BASE_MS * 2 ** retry + Math.random() * 300;
+      console.warn(
+        `[ai] Gemini ${key.label} is busy — retry ${retry + 1}/${BUSY_RETRIES} in ${Math.round(wait)}ms`
+      );
+      await sleep(wait);
+    }
+  }
+}
+
 /**
  * Run `run` with one of the configured keys, moving to the next key when that
  * key is out of quota or unavailable. Returns the value plus the key that
@@ -242,8 +291,9 @@ export async function withGeminiKey<T>(
 ): Promise<{ value: T; key: GeminiKey }> {
   const poolSize = geminiKeys().length;
   if (poolSize === 0) {
-    throw new Error(
-      "GEMINI_API_KEY is not set. Create a key at https://aistudio.google.com/app/apikey and add it to .env"
+    throw aiError(
+      "GEMINI_API_KEY is not set. Create a key at https://aistudio.google.com/app/apikey and add it to .env",
+      "auth"
     );
   }
 
@@ -260,7 +310,7 @@ export async function withGeminiKey<T>(
     tried.add(key.slot);
 
     try {
-      const value = await run(clientFor(key), key);
+      const value = await runWithBusyRetries(run, clientFor(key), key);
       markSuccess(key.slot);
       return { value, key };
     } catch (err) {
@@ -288,20 +338,40 @@ export async function withGeminiKey<T>(
         continue;
       }
 
-      markCooldown(key.slot, retryDelayMs(err) ?? MIN_COOLDOWN_MS);
-      console.warn(`[ai] Gemini ${key.label} is out of quota — trying the next key`);
+      // A per-day allowance won't return in the few seconds the retry hint
+      // suggests, so park the key for the full window instead of hammering it.
+      const perDay = /PerDay|per day/i.test(messageOf(err));
+      markCooldown(
+        key.slot,
+        perDay ? MAX_COOLDOWN_MS : retryDelayMs(err) ?? MIN_COOLDOWN_MS
+      );
+      console.warn(
+        `[ai] Gemini ${key.label} is out of ${perDay ? "daily " : ""}quota — trying the next key`
+      );
     }
   }
 
   // Everything failed. Log the provider detail, but hand the user something
   // readable (the raw error body is a wall of JSON).
   if (tried.size === 0 || lastKind === "auth") {
-    throw new Error(
-      "Every configured Gemini API key was rejected. Check GEMINI_API_KEY, GEMINI_API_KEY_2 and GEMINI_API_KEY_3."
+    throw aiError(
+      "Every configured Gemini API key was rejected. Check GEMINI_API_KEY, GEMINI_API_KEY_2 and GEMINI_API_KEY_3.",
+      "auth"
     );
   }
   console.error("[ai] all Gemini keys are unavailable:", messageOf(lastError));
-  throw new Error(
-    "The AI tutor is rate limited right now. Try again in a moment."
+
+  // Say which of the two problems it is: an overloaded model clears in seconds,
+  // while a spent free-tier quota only resets later. Telling a student to
+  // "try again in a moment" when the quota is gone just wastes their time.
+  if (lastKind === "busy") {
+    throw aiError(
+      "The AI model is busy right now — Google reports high demand. Try again in a few seconds.",
+      "busy"
+    );
+  }
+  throw aiError(
+    "The AI has used up its free-tier quota for now. It resets within an hour, or you can add another AI Studio key to spread the load.",
+    "quota"
   );
 }
