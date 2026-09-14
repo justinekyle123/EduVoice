@@ -1,5 +1,12 @@
-import { ComingSoon } from "@/features/dashboard/components/ComingSoon";
+import { auth } from "@clerk/nextjs/server";
+import { redirect } from "next/navigation";
+import { TasksUI } from "@/features/tasks/components/TasksUI";
 
-export default function TasksPage() {
-  return <ComingSoon section="tasks" />;
+export const dynamic = "force-dynamic";
+
+export default async function TasksPage() {
+  const { userId } = await auth();
+  if (!userId) redirect("/sign-in");
+
+  return <TasksUI />;
 }
