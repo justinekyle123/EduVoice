@@ -6,15 +6,21 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   AlertTriangle,
   AudioLines,
+  Check,
   Mic,
+  Paperclip,
+  Plus,
   Send,
   Sparkles,
   Square,
+  Upload,
   Volume2,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { VoiceMode } from "./VoiceMode";
 import { chatModes, type ChatMode } from "../lib/modes";
+import { providerDotClass, providerLabel } from "../lib/providers";
 import { speechLangFor, type DetectedLanguage } from "../lib/detect";
 import { TTS_VOICES, DEFAULT_TTS_VOICE } from "../lib/voices";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
@@ -44,6 +50,13 @@ const TONE_LABELS: Record<string, string> = {
   confused: "🤔 Confused",
 };
 
+/** Short human-readable size for the composer's attachment chips. */
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 /** Shared width for the conversation and the composer, like Claude's thread column. */
 const THREAD_WIDTH = "mx-auto w-full max-w-3xl px-4 sm:px-6";
 
@@ -68,8 +81,13 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
   const [ttsVoice, setTtsVoice] = useState<string>(DEFAULT_TTS_VOICE);
   const [retrying, setRetrying] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
+  // Composer "+" menu (attachments + mode switching) and its picked files.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [attachments, setAttachments] = useState<File[]>([]);
   const endRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Tracks which session the loaded messages belong to, so we skip the refetch
   // right after a new chat is created (see handleSend → router.replace).
   const loadedForRef = useRef<string | null>(null);
@@ -95,6 +113,8 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
       setMessages([]);
       setError(null);
       setMode("chat");
+      setMenuOpen(false);
+      setAttachments([]);
       loadedForRef.current = null;
       setLoading(false);
       return;
@@ -156,6 +176,25 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
   useEffect(() => {
     window.localStorage.setItem("ttsVoice", ttsVoice);
   }, [ttsVoice]);
+
+  // Dismiss the composer menu on an outside click or Escape.
+  useEffect(() => {
+    if (!menuOpen) return;
+
+    function onPointerDown(event: MouseEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setMenuOpen(false);
+    }
+
+    window.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [menuOpen]);
 
   /**
    * Sends one turn and returns the saved assistant message, or null when the
@@ -235,6 +274,24 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
     }
   }
 
+  function addAttachments(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setAttachments((prev) => {
+      const next = [...prev];
+      for (const file of Array.from(files)) {
+        // Ignore re-picking a file that's already attached.
+        if (!next.some((f) => f.name === file.name && f.size === file.size)) {
+          next.push(file);
+        }
+      }
+      return next;
+    });
+  }
+
+  function removeAttachment(index: number) {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  }
+
   function toggleVoice() {
     if (listening) stop();
     else start(speechLangFor("en"));
@@ -299,28 +356,133 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
         </p>
       )}
 
+      {attachments.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 px-3 pt-3">
+          {attachments.map((file, index) => (
+            <span
+              key={`${file.name}-${file.size}`}
+              className="flex min-w-0 items-center gap-1.5 rounded-xl border border-zinc-200 bg-zinc-50 py-1 pl-2 pr-1 text-xs text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+            >
+              <Paperclip className="h-3.5 w-3.5 shrink-0 text-zinc-400 dark:text-zinc-500" />
+              <span className="max-w-[12rem] truncate">{file.name}</span>
+              <span className="shrink-0 text-[11px] text-zinc-400 dark:text-zinc-500">
+                {formatBytes(file.size)}
+              </span>
+              <button
+                type="button"
+                onClick={() => removeAttachment(index)}
+                aria-label={`Remove ${file.name}`}
+                className="shrink-0 rounded-md p-0.5 text-zinc-400 transition-colors hover:bg-zinc-200 hover:text-zinc-700 dark:hover:bg-zinc-700 dark:hover:text-zinc-100"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          ))}
+          <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
+            Preview only — not sent to the tutor yet
+          </span>
+        </div>
+      )}
+
       <div className="flex items-end justify-between gap-2 px-2.5 pb-2.5">
         <div className="flex min-w-0 flex-wrap items-center gap-1">
-          {chatModes.map((m) => {
-            const active = m.id === mode;
-            return (
-              <button
-                key={m.id}
-                type="button"
-                onClick={() => handleModeChange(m.id)}
-                title={m.description}
+          {/* "+" menu: attachments plus mode switching (replaces the Chat pill). */}
+          <div ref={menuRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setMenuOpen((open) => !open)}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-label="Add an attachment or switch mode"
+              title="Add an attachment or switch mode"
+              className={cn(
+                "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
+                menuOpen
+                  ? "bg-zinc-200 text-zinc-900 dark:bg-zinc-700 dark:text-zinc-100"
+                  : "text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+              )}
+            >
+              <Plus
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-medium transition-colors",
-                  active
-                    ? "bg-indigo-600 text-white"
-                    : "text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+                  "h-4 w-4 transition-transform duration-200",
+                  menuOpen && "rotate-45"
                 )}
-              >
-                <m.icon className="h-3.5 w-3.5" />
-                {m.label}
-              </button>
-            );
-          })}
+              />
+            </button>
+
+            <AnimatePresence>
+              {menuOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: 6, scale: 0.98 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 6, scale: 0.98 }}
+                  transition={{ duration: 0.14 }}
+                  role="menu"
+                  aria-label="Add an attachment or switch mode"
+                  className="absolute bottom-full left-0 z-30 mb-2 w-60 rounded-2xl border border-zinc-200 bg-white p-1.5 shadow-xl shadow-zinc-900/10 dark:border-zinc-700 dark:bg-zinc-900"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      fileInputRef.current?.click();
+                    }}
+                    className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                  >
+                    <Upload className="h-4 w-4 shrink-0 text-zinc-400 dark:text-zinc-500" />
+                    Upload file
+                  </button>
+
+                  <div className="mx-1 my-1 h-px bg-zinc-100 dark:bg-zinc-800" />
+
+                  <p className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+                    Mode
+                  </p>
+                  {chatModes.map((m) => {
+                    const active = m.id === mode;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={active}
+                        title={m.description}
+                        onClick={() => {
+                          handleModeChange(m.id);
+                          setMenuOpen(false);
+                        }}
+                        className={cn(
+                          "flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-sm font-medium transition-colors",
+                          active
+                            ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                            : "text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                        )}
+                      >
+                        <m.icon className="h-4 w-4 shrink-0" />
+                        <span className="flex-1 text-left">{m.label}</span>
+                        {active && <Check className="h-3.5 w-3.5 shrink-0" />}
+                      </button>
+                    );
+                  })}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              addAttachments(e.target.files);
+              // Reset so re-picking the same file still fires onChange.
+              e.target.value = "";
+            }}
+          />
+
+          {/* Modes live in the "+" menu — only voice mode keeps a pill here. */}
           <button
             type="button"
             onClick={() => {
@@ -509,13 +671,10 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
                               <span
                                 className={cn(
                                   "h-1 w-1 rounded-full",
-                                  m.provider === "groq"
-                                    ? "bg-emerald-500"
-                                    : "bg-indigo-500"
+                                  providerDotClass(m.provider)
                                 )}
                               />
-                              {m.provider.charAt(0).toUpperCase() +
-                                m.provider.slice(1)}
+                              {providerLabel(m.provider)}
                             </span>
                           )}
                         </div>

@@ -1,16 +1,15 @@
 // Unified AI entry point. Call this instead of the individual providers.
 //
-// Order (per EduVoice_stack.md, Google AI Studio is the primary API):
-//   1. gemini (primary, default) — falls back to groq on failure
-//   2. groq (primary)            — falls back to gemini on failure
-//
-// Override the primary with the AI_PROVIDER env var: AI_PROVIDER=groq
+// Everything is served by Google AI Studio (Gemini). Instead of falling back to
+// another vendor, the provider layer rotates across the API keys of up to three
+// AI Studio accounts — one free-tier quota each — and retries on the next key
+// when one is out of quota. That logic lives in ./keys.ts.
 
-import { generateText as geminiGenerateText } from "./gemini";
-import { generateText as groqGenerateText } from "./groq";
 import type { Content } from "@google/genai";
+import { generateText as geminiGenerateText } from "./gemini";
 
-export type Provider = "gemini" | "groq";
+/** Which AI Studio account answered: slot 1, 2 or 3 of the key pool. */
+export type Provider = `gemini-${number}`;
 
 export type GenerateTextInput = {
   prompt: string;
@@ -23,26 +22,9 @@ export type GenerateTextResult = {
   provider: Provider;
 };
 
-function primaryProvider(): Provider {
-  return process.env.AI_PROVIDER?.toLowerCase() === "groq" ? "groq" : "gemini";
-}
-
 export async function generateText(
   input: GenerateTextInput
 ): Promise<GenerateTextResult> {
-  const primary = primaryProvider();
-  const fallback: Provider = primary === "groq" ? "gemini" : "groq";
-  const first = primary === "groq" ? groqGenerateText : geminiGenerateText;
-  const second = fallback === "groq" ? groqGenerateText : geminiGenerateText;
-
-  try {
-    return { text: await first(input), provider: primary };
-  } catch (primaryError) {
-    console.error(
-      `[ai] ${primary} request failed, falling back:`,
-      primaryError instanceof Error ? primaryError.message : primaryError
-    );
-  }
-
-  return { text: await second(input), provider: fallback };
+  const { text, slot } = await geminiGenerateText(input);
+  return { text, provider: `gemini-${slot}` };
 }

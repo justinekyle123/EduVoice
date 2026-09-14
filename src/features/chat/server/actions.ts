@@ -163,7 +163,8 @@ export async function sendChatMessage(input: {
     .set({ mode: input.mode, language, title: title ?? undefined, updatedAt: new Date() })
     .where(eq(chatSessions.id, sessionId));
 
-  // Call the AI (Gemini primary, Groq fallback) and persist the reply.
+  // Call the AI (Gemini, rotating across the configured AI Studio keys) and
+  // persist the reply together with the key slot that answered.
   let assistantMessage = null;
   let error: string | null = null;
 
