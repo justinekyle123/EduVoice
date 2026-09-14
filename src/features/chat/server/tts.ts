@@ -1,12 +1,13 @@
 "use server";
 
 import { auth } from "@clerk/nextjs/server";
-import { GoogleGenAI } from "@google/genai";
 import { resolveTtsVoice } from "../lib/voices";
+import { withGeminiKey } from "@/lib/ai/keys";
 
 // Server-only Gemini text-to-speech for the "Listen" button (replaces the
-// browser's built-in voices). Uses the same GEMINI_API_KEY as the chat model,
-// so it works on the free tier without extra setup.
+// browser's built-in voices). Uses the same rotating key pool as the chat
+// model (see lib/ai/keys.ts), so spoken replies also spread across the free
+// tiers of every configured AI Studio account.
 //
 // Model + voice are overridable via env vars:
 //   GEMINI_TTS_MODEL — default gemini-3.1-flash-tts-preview
@@ -20,19 +21,6 @@ import { resolveTtsVoice } from "../lib/voices";
 const ttsModel = process.env.GEMINI_TTS_MODEL ?? "gemini-3.1-flash-tts-preview";
 // Keep responses small (PCM ≈ 48 KB/sec before base64): cap very long replies.
 const MAX_TTS_CHARS = 1200;
-
-let ai: GoogleGenAI | null = null;
-
-function getClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error(
-      "GEMINI_API_KEY is not set. Create a key at https://aistudio.google.com/app/apikey and add it to .env"
-    );
-  }
-  ai ??= new GoogleGenAI({ apiKey });
-  return ai;
-}
 
 /** Wrap raw PCM samples in a RIFF/WAVE header so browsers can play them. */
 function pcmToWavDataUri(
@@ -77,14 +65,16 @@ export async function synthesizeSpeech(input: {
   const voice = resolveTtsVoice(input.voice ?? process.env.GEMINI_TTS_VOICE);
 
   try {
-    const interaction = await getClient().interactions.create({
-      model: ttsModel,
-      input: text.slice(0, MAX_TTS_CHARS),
-      response_format: { type: "audio" },
-      generation_config: {
-        speech_config: [{ voice }],
-      },
-    });
+    const { value: interaction } = await withGeminiKey((client) =>
+      client.interactions.create({
+        model: ttsModel,
+        input: text.slice(0, MAX_TTS_CHARS),
+        response_format: { type: "audio" },
+        generation_config: {
+          speech_config: [{ voice }],
+        },
+      })
+    );
 
     const audio = interaction.output_audio;
     if (!audio?.data) return { error: "No audio returned" };
