@@ -42,9 +42,9 @@ type TaskRow = Awaited<ReturnType<typeof getTasks>>[number];
 const panel =
   "rounded-2xl border border-zinc-200/80 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900";
 const field =
-  "w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm text-zinc-900 outline-none transition-colors placeholder:text-zinc-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-indigo-500 dark:focus:ring-indigo-500/20";
+  "w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm text-zinc-900 outline-none transition-colors placeholder:text-zinc-400 focus:border-brand-400 focus:ring-2 focus:ring-brand-200/70 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-brand-500 dark:focus:ring-brand-500/20";
 const primaryButton =
-  "inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-indigo-500 to-fuchsia-500 px-4 py-2.5 text-sm font-medium text-white shadow-md shadow-indigo-500/25 transition-all duration-200 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60";
+  "inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-brand-400 to-brand-500 px-4 py-2.5 text-sm font-semibold text-brand-950 shadow-md shadow-brand-500/25 transition-all duration-200 hover:brightness-105 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60";
 const ghostButton =
   "inline-flex items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100";
 
@@ -219,7 +219,7 @@ function TaskItem({
     return (
       <form
         onSubmit={handleSave}
-        className="space-y-2 rounded-xl border border-indigo-200 bg-indigo-50/40 p-3 dark:border-indigo-500/30 dark:bg-indigo-500/5"
+        className="space-y-2 rounded-xl border border-brand-200 bg-brand-50/40 p-3 dark:border-brand-500/30 dark:bg-brand-500/5"
       >
         <input
           value={title}
@@ -261,7 +261,7 @@ function TaskItem({
         onClick={() => onToggle(task)}
         disabled={busy}
         aria-label={task.completed ? "Mark as not done" : "Mark as done"}
-        className="mt-0.5 shrink-0 text-zinc-400 transition-colors hover:text-indigo-600 disabled:opacity-50 dark:text-zinc-500 dark:hover:text-indigo-400"
+        className="mt-0.5 shrink-0 text-zinc-400 transition-colors hover:text-brand-700 disabled:opacity-50 dark:text-zinc-500 dark:hover:text-brand-400"
       >
         {busy ? (
           <Loader2 className="h-5 w-5 animate-spin" />
@@ -652,10 +652,10 @@ export function TasksUI() {
                 : "Voice input is not supported in this browser"
             }
             className={cn(
-              "flex h-14 w-14 shrink-0 items-center justify-center rounded-full text-white shadow-md transition-all duration-200",
+              "flex h-14 w-14 shrink-0 items-center justify-center rounded-full shadow-md transition-all duration-200",
               listening
-                ? "animate-pulse bg-red-500 shadow-red-500/30"
-                : "bg-gradient-to-br from-indigo-500 to-fuchsia-500 shadow-indigo-500/25 hover:shadow-lg",
+                ? "animate-pulse bg-red-500 text-white shadow-red-500/30"
+                : "bg-gradient-to-br from-brand-400 to-brand-500 text-brand-950 shadow-brand-500/25 hover:shadow-lg",
               (!voiceSupported || capturing) && "cursor-not-allowed opacity-50"
             )}
           >
@@ -715,7 +715,7 @@ export function TasksUI() {
                   key={example}
                   type="button"
                   onClick={() => setComposer(example)}
-                  className="rounded-full border border-zinc-200 px-2.5 py-1 text-[11px] text-zinc-600 transition-colors hover:border-indigo-200 hover:text-indigo-700 dark:border-zinc-700 dark:text-zinc-300 dark:hover:border-indigo-500/40 dark:hover:text-indigo-300"
+                  className="rounded-full border border-zinc-200 px-2.5 py-1 text-[11px] text-zinc-600 transition-colors hover:border-brand-300 hover:text-brand-800 dark:border-zinc-700 dark:text-zinc-300 dark:hover:border-brand-500/40 dark:hover:text-brand-300"
                 >
                   {example}
                 </button>
@@ -723,7 +723,7 @@ export function TasksUI() {
             </div>
 
             {(draft || interim) && (
-              <div className="mt-3 rounded-xl border border-indigo-200 bg-indigo-50/60 px-3 py-2.5 dark:border-indigo-500/30 dark:bg-indigo-500/5">
+              <div className="mt-3 rounded-xl border border-brand-200 bg-brand-50/60 px-3 py-2.5 dark:border-brand-500/30 dark:bg-brand-500/5">
                 <p className="text-sm leading-6 text-zinc-800 dark:text-zinc-100">
                   {draft}
                   {interim && (
@@ -737,7 +737,7 @@ export function TasksUI() {
                 {draft && (
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     {pending && (
-                      <span className="inline-flex items-center gap-1.5 text-[11px] text-indigo-600 dark:text-indigo-300">
+                      <span className="inline-flex items-center gap-1.5 text-[11px] text-brand-800 dark:text-brand-300">
                         <Loader2 className="h-3 w-3 animate-spin" />
                         Adding in a moment…
                       </span>
@@ -746,7 +746,7 @@ export function TasksUI() {
                       type="button"
                       onClick={() => void sendDraft()}
                       disabled={capturing}
-                      className="rounded-full bg-indigo-600 px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-60"
+                      className="rounded-full bg-brand-400 px-2.5 py-1 text-[11px] font-semibold text-brand-950 transition-colors hover:bg-brand-300 disabled:opacity-60"
                     >
                       Add now
                     </button>
@@ -836,8 +836,8 @@ export function TasksUI() {
               "flex flex-col items-center justify-center border-dashed px-6 py-14 text-center"
             )}
           >
-            <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-50 to-fuchsia-50 ring-1 ring-indigo-100 dark:from-indigo-500/10 dark:to-fuchsia-500/10 dark:ring-indigo-500/30">
-              <ListTodo className="h-5 w-5 text-indigo-600 dark:text-indigo-400" />
+            <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-50 to-brand-100 ring-1 ring-brand-200/70 dark:from-brand-500/10 dark:to-brand-400/10 dark:ring-brand-500/30">
+              <ListTodo className="h-5 w-5 text-brand-600 dark:text-brand-400" />
             </span>
             <p className="mt-4 text-sm font-medium text-zinc-700 dark:text-zinc-300">
               Nothing on your list

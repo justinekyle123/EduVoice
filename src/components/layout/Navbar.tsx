@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { GraduationCap, Menu, X } from "lucide-react";
+import { Menu, X } from "lucide-react";
 import { Show, UserButton } from "@clerk/nextjs";
 import { cn } from "@/lib/utils";
-import { navLinks, siteConfig } from "@/lib/constants";
+import { navLinks } from "@/lib/constants";
+import { Logo } from "@/components/layout/Logo";
 
 export function Navbar() {
   const [scrolled, setScrolled] = useState(false);
@@ -32,13 +33,11 @@ export function Navbar() {
       )}
     >
       <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
-        <a href="#top" className="group flex items-center gap-2">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-white shadow-md shadow-indigo-500/25 transition-transform duration-300 group-hover:scale-105">
-            <GraduationCap className="h-4.5 w-4.5" />
-          </span>
-          <span className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
-            {siteConfig.name}
-          </span>
+        <a href="#top" className="group">
+          <Logo
+            priority
+            markClassName="transition-transform duration-300 group-hover:scale-105"
+          />
         </a>
 
         <div className="hidden items-center gap-8 md:flex">
@@ -60,7 +59,7 @@ export function Navbar() {
             </Link>
             <Link
               href="/sign-up"
-              className="rounded-full bg-zinc-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all duration-200 hover:bg-zinc-700 hover:shadow-md dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200"
+              className="rounded-full bg-gradient-to-br from-brand-400 to-brand-500 px-4 py-2 text-sm font-semibold text-brand-950 shadow-sm shadow-brand-500/25 transition-all duration-200 hover:shadow-md hover:brightness-105"
             >
               Get started
             </Link>
@@ -117,7 +116,7 @@ export function Navbar() {
                 <Link
                   href="/sign-up"
                   onClick={() => setOpen(false)}
-                  className="mt-2 rounded-full bg-zinc-900 px-4 py-2.5 text-center text-sm font-medium text-white dark:bg-white dark:text-zinc-900"
+                  className="mt-2 rounded-full bg-gradient-to-br from-brand-400 to-brand-500 px-4 py-2.5 text-center text-sm font-semibold text-brand-950"
                 >
                   Get started
                 </Link>

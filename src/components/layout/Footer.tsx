@@ -1,18 +1,13 @@
-import { GraduationCap } from "lucide-react";
 import { navLinks, siteConfig } from "@/lib/constants";
+import { Logo } from "@/components/layout/Logo";
 
 export function Footer() {
   return (
     <footer className="border-t border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
       <div className="mx-auto grid max-w-6xl gap-10 px-4 py-14 sm:px-6 md:grid-cols-3">
         <div>
-          <a href="#top" className="flex items-center gap-2">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-white">
-              <GraduationCap className="h-4.5 w-4.5" />
-            </span>
-            <span className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
-              {siteConfig.name}
-            </span>
+          <a href="#top">
+            <Logo />
           </a>
           <p className="mt-4 max-w-xs text-sm leading-6 text-zinc-500 dark:text-zinc-400">
             {siteConfig.tagline}. Built for students who learn best out loud —

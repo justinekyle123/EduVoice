@@ -17,7 +17,7 @@ export function HowItWorks() {
           transition={{ duration: 0.6, ease: "easeOut" }}
           className="mx-auto max-w-2xl text-center"
         >
-          <p className="text-sm font-semibold uppercase tracking-widest text-indigo-600 dark:text-indigo-400">
+          <p className="text-sm font-semibold uppercase tracking-widest text-brand-700 dark:text-brand-400">
             How it works
           </p>
           <h2 className="mt-3 text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 sm:text-4xl">
@@ -29,7 +29,7 @@ export function HowItWorks() {
           {/* connecting line (desktop) */}
           <div
             aria-hidden
-            className="absolute left-0 right-0 top-6 hidden h-px bg-gradient-to-r from-indigo-200 via-violet-200 to-fuchsia-200 dark:from-indigo-500/30 dark:via-violet-500/30 dark:to-fuchsia-500/30 md:block"
+            className="absolute left-0 right-0 top-6 hidden h-px bg-gradient-to-r from-brand-200 via-brand-400 to-brand-200 dark:from-brand-500/30 dark:via-brand-400/40 dark:to-brand-500/30 md:block"
           />
 
           {steps.map((step, index) => (
@@ -42,9 +42,9 @@ export function HowItWorks() {
               className="relative"
             >
               <div className="relative z-10 flex h-12 w-12 items-center justify-center rounded-full border border-zinc-200 bg-white shadow-md shadow-zinc-900/[0.04] dark:border-zinc-700 dark:bg-zinc-900">
-                <step.icon className="h-5 w-5 text-indigo-600 dark:text-indigo-400" />
+                <step.icon className="h-5 w-5 text-brand-600 dark:text-brand-400" />
               </div>
-              <p className="mt-5 text-xs font-semibold uppercase tracking-widest text-indigo-500 dark:text-indigo-400">
+              <p className="mt-5 text-xs font-semibold uppercase tracking-widest text-brand-700 dark:text-brand-400">
                 Step {index + 1}
               </p>
               <h3 className="mt-2 text-base font-semibold text-zinc-900 dark:text-zinc-100">

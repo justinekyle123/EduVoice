@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { LogoMark } from "@/components/layout/Logo";
 import { detectLanguage, speechLangFor } from "../lib/detect";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 
@@ -223,9 +224,7 @@ export function VoiceMode({
     >
       {/* Header */}
       <header className="flex items-center gap-3 px-4 py-3 sm:px-6">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-xs font-semibold text-white">
-          EV
-        </span>
+        <LogoMark size={32} />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
             {title}
@@ -249,13 +248,13 @@ export function VoiceMode({
         <div className="relative flex h-32 w-32 items-center justify-center">
           {active && (
             <>
-              <span className="absolute inset-0 animate-ping rounded-full bg-indigo-400/20" />
-              <span className="absolute inset-3 animate-ping rounded-full bg-fuchsia-400/20 [animation-delay:250ms]" />
+              <span className="absolute inset-0 animate-ping rounded-full bg-brand-400/20" />
+              <span className="absolute inset-3 animate-ping rounded-full bg-brand-500/20 [animation-delay:250ms]" />
             </>
           )}
           <span
             className={cn(
-              "relative flex h-24 w-24 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-white shadow-xl shadow-indigo-500/25",
+              "relative flex h-24 w-24 items-center justify-center rounded-full bg-gradient-to-br from-brand-400 to-brand-500 text-brand-950 shadow-xl shadow-brand-500/30",
               phase === "thinking" && "animate-pulse",
               muted && "opacity-50"
             )}
@@ -265,7 +264,7 @@ export function VoiceMode({
                 {[0, 1, 2, 3, 4].map((i) => (
                   <span
                     key={i}
-                    className="animate-equalizer w-1 origin-bottom rounded-full bg-white/90"
+                    className="animate-equalizer w-1 origin-bottom rounded-full bg-brand-950/90"
                     style={{ height: 24, animationDelay: `${i * 0.12}s` }}
                   />
                 ))}
@@ -329,7 +328,7 @@ export function VoiceMode({
               type="submit"
               disabled={!typed.trim()}
               aria-label="Send question"
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-white disabled:opacity-30"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-400 to-brand-500 text-brand-950 disabled:opacity-30"
             >
               <Send className="h-4 w-4" />
             </button>

@@ -39,9 +39,9 @@ const QUESTION_LABELS: Record<string, string> = {
 const panel =
   "rounded-2xl border border-zinc-200/80 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900";
 const field =
-  "w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm text-zinc-900 outline-none transition-colors placeholder:text-zinc-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-indigo-500 dark:focus:ring-indigo-500/20";
+  "w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm text-zinc-900 outline-none transition-colors placeholder:text-zinc-400 focus:border-brand-400 focus:ring-2 focus:ring-brand-200/70 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-brand-500 dark:focus:ring-brand-500/20";
 const primaryButton =
-  "inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-indigo-500 to-fuchsia-500 px-4 py-2.5 text-sm font-medium text-white shadow-md shadow-indigo-500/25 transition-all duration-200 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60";
+  "inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-brand-400 to-brand-500 px-4 py-2.5 text-sm font-semibold text-brand-950 shadow-md shadow-brand-500/25 transition-all duration-200 hover:brightness-105 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60";
 const quietButton =
   "inline-flex items-center justify-center gap-2 rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800";
 
@@ -196,7 +196,7 @@ export function QuizUI({ roomId }: { roomId?: string | null }) {
         </div>
 
         {roomName && (
-          <p className="flex items-center gap-2 rounded-xl bg-indigo-50 px-3.5 py-2.5 text-xs text-indigo-700 ring-1 ring-indigo-100 dark:bg-indigo-500/10 dark:text-indigo-300 dark:ring-indigo-500/30">
+          <p className="flex items-center gap-2 rounded-xl bg-brand-50 px-3.5 py-2.5 text-xs text-brand-800 ring-1 ring-brand-200/70 dark:bg-brand-500/10 dark:text-brand-300 dark:ring-brand-500/30">
             <Trophy className="h-3.5 w-3.5" />
             This score counts toward {roomName}&apos;s leaderboard.
           </p>
@@ -242,7 +242,7 @@ export function QuizUI({ roomId }: { roomId?: string | null }) {
                       className={cn(
                         "flex w-full items-center gap-3 rounded-xl border px-3.5 py-2.5 text-left text-sm transition-colors",
                         selected
-                          ? "border-indigo-400 bg-indigo-50 text-indigo-800 dark:border-indigo-500/60 dark:bg-indigo-500/10 dark:text-indigo-200"
+                          ? "border-brand-400 bg-brand-50 text-brand-900 dark:border-brand-500/60 dark:bg-brand-500/10 dark:text-brand-200"
                           : "border-zinc-200 text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
                       )}
                     >
@@ -250,7 +250,7 @@ export function QuizUI({ roomId }: { roomId?: string | null }) {
                         className={cn(
                           "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2",
                           selected
-                            ? "border-indigo-500 bg-indigo-500 text-white"
+                            ? "border-brand-500 bg-brand-500 text-brand-950"
                             : "border-zinc-300 dark:border-zinc-600"
                         )}
                       >
@@ -435,8 +435,8 @@ export function QuizUI({ roomId }: { roomId?: string | null }) {
         </div>
 
         {roomId && (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-indigo-200 bg-indigo-50/70 p-4 dark:border-indigo-500/30 dark:bg-indigo-500/10">
-            <p className="flex items-center gap-2 text-sm text-indigo-800 dark:text-indigo-200">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-brand-200 bg-brand-50/70 p-4 dark:border-brand-500/30 dark:bg-brand-500/10">
+            <p className="flex items-center gap-2 text-sm text-brand-900 dark:text-brand-200">
               <Users className="h-4 w-4" />
               {roomName
                 ? `Quizzing in ${roomName} — scores land on its shared leaderboard.`
@@ -444,7 +444,7 @@ export function QuizUI({ roomId }: { roomId?: string | null }) {
             </p>
             <Link
               href="/dashboard/rooms"
-              className="text-xs font-medium text-indigo-700 underline-offset-2 hover:underline dark:text-indigo-300"
+              className="text-xs font-medium text-brand-800 underline-offset-2 hover:underline dark:text-brand-300"
             >
               Back to rooms
             </Link>
@@ -453,7 +453,7 @@ export function QuizUI({ roomId }: { roomId?: string | null }) {
 
         <form onSubmit={handleGenerate} className={cn(panel, "space-y-4 p-5")}>
           <h2 className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-            <Sparkles className="h-4 w-4 text-indigo-500 dark:text-indigo-400" />
+            <Sparkles className="h-4 w-4 text-brand-600 dark:text-brand-400" />
             Generate a quiz
           </h2>
 
@@ -473,7 +473,7 @@ export function QuizUI({ roomId }: { roomId?: string | null }) {
               <select
                 value={count}
                 onChange={(event) => setCount(Number(event.target.value))}
-                className="rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-sm text-zinc-900 outline-none focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                className="rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-sm text-zinc-900 outline-none focus:border-brand-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
               >
                 {[3, 5, 8, 10, 15].map((value) => (
                   <option key={value} value={value}>
@@ -517,7 +517,7 @@ export function QuizUI({ roomId }: { roomId?: string | null }) {
                   disabled={busy !== null}
                   className={cn(
                     panel,
-                    "p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-indigo-200 hover:shadow-lg hover:shadow-indigo-900/[0.06] disabled:opacity-60 dark:hover:border-indigo-500/40"
+                    "p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-lg hover:shadow-brand-950/[0.08] disabled:opacity-60 dark:hover:border-brand-500/40"
                   )}
                 >
                   <p className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
@@ -556,7 +556,7 @@ export function QuizUI({ roomId }: { roomId?: string | null }) {
                     {attempt.title}
                   </span>
                   {attempt.roomId && (
-                    <span className="shrink-0 rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300">
+                    <span className="shrink-0 rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-medium text-brand-800 dark:bg-brand-500/10 dark:text-brand-300">
                       room
                     </span>
                   )}

@@ -7,7 +7,6 @@ import { AnimatePresence, motion } from "motion/react";
 import { UserButton } from "@clerk/nextjs";
 import {
   ArrowLeft,
-  GraduationCap,
   Menu,
   MessageSquare,
   Plus,
@@ -15,7 +14,8 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { dashboardNav, siteConfig } from "@/lib/constants";
+import { dashboardNav } from "@/lib/constants";
+import { Logo } from "@/components/layout/Logo";
 import {
   deleteChatSession,
   getChatSessions,
@@ -76,7 +76,7 @@ function ChatSidebarNav({ onNavigate }: { onNavigate?: () => void }) {
       <Link
         href="/dashboard/chat"
         onClick={onNavigate}
-        className="mb-3 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-indigo-500 to-fuchsia-500 px-4 py-2.5 text-sm font-medium text-white shadow-md shadow-indigo-500/25 transition-all duration-200 hover:shadow-lg"
+        className="mb-3 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-brand-400 to-brand-500 px-4 py-2.5 text-sm font-semibold text-brand-950 shadow-md shadow-brand-500/25 transition-all duration-200 hover:shadow-lg hover:brightness-105"
       >
         <Plus className="h-4 w-4" />
         New chat
@@ -96,7 +96,7 @@ function ChatSidebarNav({ onNavigate }: { onNavigate?: () => void }) {
               className={cn(
                 "group flex items-center gap-2 rounded-xl px-3 py-2.5 text-left transition-colors",
                 active
-                  ? "bg-indigo-50 dark:bg-indigo-500/10"
+                  ? "bg-brand-50 dark:bg-brand-500/10"
                   : "hover:bg-zinc-100 dark:hover:bg-zinc-800"
               )}
             >
@@ -109,7 +109,7 @@ function ChatSidebarNav({ onNavigate }: { onNavigate?: () => void }) {
                   className={cn(
                     "truncate text-sm font-medium",
                     active
-                      ? "text-indigo-700 dark:text-indigo-300"
+                      ? "text-brand-800 dark:text-brand-300"
                       : "text-zinc-800 dark:text-zinc-100"
                   )}
                 >
@@ -148,17 +148,8 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <div className="flex h-full flex-col">
-      <Link
-        href="/"
-        onClick={onNavigate}
-        className="flex items-center gap-2 px-5 py-5"
-      >
-        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-white shadow-md shadow-indigo-500/25">
-          <GraduationCap className="h-4.5 w-4.5" />
-        </span>
-        <span className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
-          {siteConfig.name}
-        </span>
+      <Link href="/" onClick={onNavigate} className="px-5 py-5">
+        <Logo />
       </Link>
 
       {isChat ? (
@@ -177,7 +168,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
                 className={cn(
                   "group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors duration-200",
                   active
-                    ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                    ? "bg-brand-50 text-brand-800 dark:bg-brand-500/10 dark:text-brand-300"
                     : "text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
                 )}
               >
@@ -185,7 +176,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
                   className={cn(
                     "h-4.5 w-4.5 shrink-0 transition-colors",
                     active
-                      ? "text-indigo-600"
+                      ? "text-brand-600 dark:text-brand-400"
                       : "text-zinc-400 group-hover:text-zinc-600 dark:text-zinc-500 dark:group-hover:text-zinc-300"
                   )}
                 />
