@@ -20,5 +20,5 @@ export function providerLabel(provider: string): string {
 
 /** Dot colour for the badge: brand colour for Gemini, neutral otherwise. */
 export function providerDotClass(provider: string): string {
-  return provider.startsWith("gemini") ? "bg-indigo-500" : "bg-zinc-400";
+  return provider.startsWith("gemini") ? "bg-brand-600" : "bg-zinc-400";
 }

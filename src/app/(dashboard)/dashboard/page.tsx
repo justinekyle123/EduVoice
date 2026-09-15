@@ -48,28 +48,28 @@ export default async function OverviewPage() {
       label: "Start a chat",
       description: "Ask anything by voice or text",
       icon: MessageSquare,
-      accent: "from-indigo-500 to-violet-500",
+      accent: "from-brand-300 to-brand-500",
     },
     {
       href: "/dashboard/documents",
       label: "Upload a document",
       description: "PDFs, Word files, lecture notes",
       icon: FileText,
-      accent: "from-sky-500 to-cyan-500",
+      accent: "from-brand-400 to-brand-600",
     },
     {
       href: "/dashboard/quiz",
       label: "Generate a quiz",
       description: "Instant questions from your notes",
       icon: ClipboardList,
-      accent: "from-fuchsia-500 to-pink-500",
+      accent: "from-brand-300 to-brand-400",
     },
     {
       href: "/dashboard/tasks",
       label: "Add a task",
       description: "Capture study to-dos hands-free",
       icon: ListTodo,
-      accent: "from-emerald-500 to-teal-500",
+      accent: "from-brand-500 to-brand-600",
     },
   ];
 
@@ -141,16 +141,16 @@ export default async function OverviewPage() {
           <Link
             key={action.href}
             href={action.href}
-            className="group rounded-2xl border border-zinc-200/80 bg-white p-5 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-indigo-200 hover:shadow-lg hover:shadow-indigo-900/[0.06] dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-indigo-500/40 dark:hover:shadow-black/40"
+            className="group rounded-2xl border border-zinc-200/80 bg-white p-5 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-lg hover:shadow-brand-950/[0.08] dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-brand-500/40 dark:hover:shadow-black/40"
           >
             <span
-              className={`flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br ${action.accent} text-white shadow-md`}
+              className={`flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br ${action.accent} text-brand-950 shadow-md shadow-brand-500/20`}
             >
               <action.icon className="h-5 w-5" />
             </span>
             <p className="mt-4 flex items-center gap-1 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
               {action.label}
-              <ArrowRight className="h-3.5 w-3.5 text-zinc-400 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-indigo-500 dark:text-zinc-500 dark:group-hover:text-indigo-400" />
+              <ArrowRight className="h-3.5 w-3.5 text-zinc-400 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-brand-600 dark:text-zinc-500 dark:group-hover:text-brand-400" />
             </p>
             <p className="mt-1 text-xs leading-5 text-zinc-500 dark:text-zinc-400">
               {action.description}
@@ -223,7 +223,7 @@ export default async function OverviewPage() {
           {/* Getting started */}
           <section className="rounded-2xl border border-zinc-200/80 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
             <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900 dark:text-zinc-100">
-              <Sparkles className="h-4 w-4 text-indigo-500 dark:text-indigo-400" />
+              <Sparkles className="h-4 w-4 text-brand-600 dark:text-brand-400" />
               Getting started
             </h2>
             <ul className="mt-4 space-y-2.5">

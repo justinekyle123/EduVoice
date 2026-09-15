@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { LogoMark } from "@/components/layout/Logo";
 import { VoiceMode } from "./VoiceMode";
 import { chatModes, type ChatMode } from "../lib/modes";
 import { providerDotClass, providerLabel } from "../lib/providers";
@@ -334,7 +335,7 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
   // One rounded box that owns the input, the mode pills and the actions — the
   // Claude composer shape, with the controls on a single bottom row.
   const composerEl = (
-    <div className="rounded-3xl border border-zinc-200 bg-white shadow-sm shadow-zinc-900/5 transition-colors focus-within:border-indigo-300 dark:border-zinc-700 dark:bg-zinc-900 dark:focus-within:border-indigo-500/70">
+    <div className="rounded-3xl border border-zinc-200 bg-white shadow-sm shadow-zinc-900/5 transition-colors focus-within:border-brand-400 dark:border-zinc-700 dark:bg-zinc-900 dark:focus-within:border-brand-500/70">
       <textarea
         ref={textareaRef}
         value={composer}
@@ -455,7 +456,7 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
                         className={cn(
                           "flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-sm font-medium transition-colors",
                           active
-                            ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                            ? "bg-brand-50 text-brand-800 dark:bg-brand-500/10 dark:text-brand-300"
                             : "text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800"
                         )}
                       >
@@ -491,7 +492,7 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
               setVoiceOpen(true);
             }}
             title="Start hands-free voice mode"
-            className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 px-2.5 py-1.5 text-xs font-medium text-indigo-600 transition-colors hover:bg-indigo-50 dark:border-indigo-500/30 dark:text-indigo-300 dark:hover:bg-indigo-500/10"
+            className="inline-flex items-center gap-1.5 rounded-full border border-brand-300 px-2.5 py-1.5 text-xs font-medium text-brand-700 transition-colors hover:bg-brand-50 dark:border-brand-500/30 dark:text-brand-300 dark:hover:bg-brand-500/10"
           >
             <AudioLines className="h-3.5 w-3.5" />
             Voice mode
@@ -544,7 +545,7 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
             type="button"
             onClick={() => void handleSend()}
             disabled={!composer.trim() || sending}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-white shadow-sm shadow-indigo-500/25 transition-opacity disabled:opacity-30"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-400 to-brand-500 text-brand-950 shadow-sm shadow-brand-500/25 transition-opacity disabled:opacity-30"
             aria-label="Send message"
           >
             <Send className="h-4 w-4" />
@@ -583,7 +584,7 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-4 pb-16 sm:px-6">
           <div className="w-full max-w-3xl">
             <div className="mb-7 flex flex-col items-center text-center">
-              <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-white shadow-lg shadow-indigo-500/25">
+              <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-400 to-brand-500 text-brand-950 shadow-lg shadow-brand-500/25">
                 <Sparkles className="h-6 w-6" />
               </span>
               <h3 className="mt-4 text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
@@ -611,7 +612,7 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
                     {[0, 1, 2, 3, 4].map((i) => (
                       <span
                         key={i}
-                        className="animate-equalizer w-1 origin-bottom rounded-full bg-indigo-400"
+                        className="animate-equalizer w-1 origin-bottom rounded-full bg-brand-400"
                         style={{ height: 20, animationDelay: `${i * 0.12}s` }}
                       />
                     ))}
@@ -642,7 +643,7 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
                             (tone && tone !== "neutral")) && (
                             <div className="flex flex-wrap justify-end gap-1.5">
                               {lang && lang !== "en" && (
-                                <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-600 ring-1 ring-indigo-100 dark:bg-indigo-500/10 dark:text-indigo-300 dark:ring-indigo-500/30">
+                                <span className="rounded-full bg-brand-50 px-2 py-0.5 text-[11px] font-medium text-brand-800 ring-1 ring-brand-200/70 dark:bg-brand-500/10 dark:text-brand-300 dark:ring-brand-500/30">
                                   {LANG_LABELS[lang]} detected
                                 </span>
                               )}
@@ -660,9 +661,7 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
                     return (
                       <div key={m.id} className="group">
                         <div className="flex items-center gap-2">
-                          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-[10px] font-semibold text-white">
-                            EV
-                          </span>
+                          <LogoMark size={24} className="rounded-md" />
                           <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
                             EduVoice
                           </span>
@@ -721,9 +720,7 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
                   {sending && (
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-[10px] font-semibold text-white">
-                          EV
-                        </span>
+                        <LogoMark size={24} className="rounded-md" />
                         <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
                           EduVoice
                         </span>
@@ -732,7 +729,7 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
                         {[0, 1, 2, 3, 4].map((i) => (
                           <span
                             key={i}
-                            className="animate-equalizer w-1 origin-bottom rounded-full bg-indigo-400"
+                            className="animate-equalizer w-1 origin-bottom rounded-full bg-brand-400"
                             style={{
                               height: 14,
                               animationDelay: `${i * 0.12}s`,

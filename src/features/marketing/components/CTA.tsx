@@ -12,7 +12,7 @@ export function CTA() {
         whileInView={{ opacity: 1, y: 0 }}
         viewport={{ once: true, margin: "-80px" }}
         transition={{ duration: 0.7, ease: "easeOut" }}
-        className="relative mx-auto max-w-6xl overflow-hidden rounded-3xl bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-600 px-6 py-20 text-center shadow-2xl shadow-indigo-900/20 sm:px-16"
+        className="relative mx-auto max-w-6xl overflow-hidden rounded-3xl bg-gradient-to-br from-brand-950 via-brand-800 to-brand-700 px-6 py-20 text-center shadow-2xl shadow-brand-950/30 sm:px-16"
       >
         {/* decorative blobs */}
         <div
@@ -21,7 +21,7 @@ export function CTA() {
         />
         <div
           aria-hidden
-          className="animate-float pointer-events-none absolute -bottom-24 -right-16 h-72 w-72 rounded-full bg-fuchsia-300/20 blur-3xl [animation-delay:1.5s]"
+          className="animate-float pointer-events-none absolute -bottom-24 -right-16 h-72 w-72 rounded-full bg-brand-400/25 blur-3xl [animation-delay:1.5s]"
         />
 
         <div className="relative">
@@ -32,14 +32,14 @@ export function CTA() {
           <h2 className="mx-auto mt-6 max-w-2xl text-3xl font-semibold leading-tight tracking-tight text-white sm:text-5xl">
             Ready to study out loud?
           </h2>
-          <p className="mx-auto mt-5 max-w-xl text-lg leading-8 text-indigo-100">
+          <p className="mx-auto mt-5 max-w-xl text-lg leading-8 text-brand-100">
             Ask questions by voice, get spoken answers, and turn your notes
             into quizzes — all in the language you feel most comfortable speaking.
           </p>
           <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
             <Link
               href="/sign-up"
-              className="group inline-flex h-12 items-center gap-2 rounded-full bg-white px-7 text-sm font-semibold text-indigo-700 shadow-lg shadow-indigo-900/20 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl"
+              className="group inline-flex h-12 items-center gap-2 rounded-full bg-white px-7 text-sm font-semibold text-brand-900 shadow-lg shadow-brand-950/20 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl"
             >
               Get started free
               <ArrowRight className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-0.5" />
@@ -51,7 +51,7 @@ export function CTA() {
               See how it works
             </a>
           </div>
-          <p className="mt-6 text-xs font-medium uppercase tracking-widest text-indigo-200">
+          <p className="mt-6 text-xs font-medium uppercase tracking-widest text-brand-300">
             English · Filipino · Cebuano
           </p>
         </div>

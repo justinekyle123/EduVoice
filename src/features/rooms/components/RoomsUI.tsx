@@ -44,9 +44,9 @@ const STATE_INTERVAL_MS = 10_000;
 const panel =
   "rounded-2xl border border-zinc-200/80 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900";
 const field =
-  "w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm text-zinc-900 outline-none transition-colors placeholder:text-zinc-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-indigo-500 dark:focus:ring-indigo-500/20";
+  "w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm text-zinc-900 outline-none transition-colors placeholder:text-zinc-400 focus:border-brand-400 focus:ring-2 focus:ring-brand-200/70 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-brand-500 dark:focus:ring-brand-500/20";
 const primaryButton =
-  "inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-indigo-500 to-fuchsia-500 px-4 py-2.5 text-sm font-medium text-white shadow-md shadow-indigo-500/25 transition-all duration-200 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60";
+  "inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-brand-400 to-brand-500 px-4 py-2.5 text-sm font-semibold text-brand-950 shadow-md shadow-brand-500/25 transition-all duration-200 hover:brightness-105 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60";
 
 /** "AB12CD" → "AB12 CD" so codes are easier to read back over a call. */
 function prettyCode(code: string) {
@@ -330,7 +330,7 @@ function RoomView({
         <section className={cn(panel, "flex flex-col lg:col-span-3")}>
           <header className="flex items-center justify-between border-b border-zinc-200/80 px-5 py-3.5 dark:border-zinc-800">
             <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-              <Users className="h-4 w-4 text-indigo-500 dark:text-indigo-400" />
+              <Users className="h-4 w-4 text-brand-600 dark:text-brand-400" />
               Room chat
             </h3>
             <span className="inline-flex items-center gap-1.5 text-[11px] text-zinc-400 dark:text-zinc-500">
@@ -357,10 +357,10 @@ function RoomView({
                   >
                     <span
                       className={cn(
-                        "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white",
+                        "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold",
                         mine
-                          ? "bg-gradient-to-br from-indigo-500 to-fuchsia-500"
-                          : "bg-zinc-400 dark:bg-zinc-600"
+                          ? "bg-gradient-to-br from-brand-400 to-brand-500 text-brand-950"
+                          : "bg-zinc-400 text-white dark:bg-zinc-600"
                       )}
                       title={message.name ?? message.email}
                     >
@@ -378,7 +378,7 @@ function RoomView({
                         className={cn(
                           "mt-1 inline-block whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2 text-sm",
                           mine
-                            ? "bg-indigo-500 text-white"
+                            ? "bg-brand-400 text-brand-950"
                             : "bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-100"
                         )}
                       >
@@ -440,7 +440,7 @@ function RoomView({
                     className={cn(
                       "flex items-center gap-3 rounded-xl px-3 py-2.5",
                       entry.userId === state.viewerId
-                        ? "bg-indigo-50 dark:bg-indigo-500/10"
+                        ? "bg-brand-50 dark:bg-brand-500/10"
                         : "bg-zinc-50 dark:bg-zinc-800/60"
                     )}
                   >
@@ -488,7 +488,7 @@ function RoomView({
 
             <Link
               href={`/dashboard/quiz?room=${roomId}`}
-              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-indigo-500 to-fuchsia-500 px-4 py-2.5 text-sm font-medium text-white shadow-md shadow-indigo-500/25 transition-all duration-200 hover:shadow-lg"
+              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-brand-400 to-brand-500 px-4 py-2.5 text-sm font-semibold text-brand-950 shadow-md shadow-brand-500/25 transition-all duration-200 hover:brightness-105 hover:shadow-lg"
             >
               <ClipboardList className="h-4 w-4" />
               Take a room quiz
@@ -497,7 +497,7 @@ function RoomView({
 
           <section className={cn(panel, "p-5")}>
             <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-              <Users className="h-4 w-4 text-indigo-500 dark:text-indigo-400" />
+              <Users className="h-4 w-4 text-brand-600 dark:text-brand-400" />
               Members
             </h3>
             <ul className="mt-3 space-y-2">
@@ -644,7 +644,7 @@ export function RoomsUI() {
           <div className="grid gap-4 sm:grid-cols-2">
             <form onSubmit={handleCreate} className={cn(panel, "space-y-3 p-5")}>
               <h2 className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                <Plus className="h-4 w-4 text-indigo-500 dark:text-indigo-400" />
+                <Plus className="h-4 w-4 text-brand-600 dark:text-brand-400" />
                 Create a room
               </h2>
               <input
@@ -670,7 +670,7 @@ export function RoomsUI() {
 
             <form onSubmit={handleJoin} className={cn(panel, "space-y-3 p-5")}>
               <h2 className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                <Users className="h-4 w-4 text-indigo-500 dark:text-indigo-400" />
+                <Users className="h-4 w-4 text-brand-600 dark:text-brand-400" />
                 Join with a code
               </h2>
               <input
@@ -717,8 +717,8 @@ export function RoomsUI() {
                   "flex flex-col items-center justify-center border-dashed px-6 py-14 text-center"
                 )}
               >
-                <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-50 to-fuchsia-50 ring-1 ring-indigo-100 dark:from-indigo-500/10 dark:to-fuchsia-500/10 dark:ring-indigo-500/30">
-                  <Users className="h-5 w-5 text-indigo-600 dark:text-indigo-400" />
+                <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-50 to-brand-100 ring-1 ring-brand-200/70 dark:from-brand-500/10 dark:to-brand-400/10 dark:ring-brand-500/30">
+                  <Users className="h-5 w-5 text-brand-600 dark:text-brand-400" />
                 </span>
                 <p className="mt-4 text-sm font-medium text-zinc-700 dark:text-zinc-300">
                   No rooms yet
@@ -737,7 +737,7 @@ export function RoomsUI() {
                     onClick={() => setActiveRoomId(room.id)}
                     className={cn(
                       panel,
-                      "group p-5 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-indigo-200 hover:shadow-lg hover:shadow-indigo-900/[0.06] dark:hover:border-indigo-500/40"
+                      "group p-5 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-lg hover:shadow-brand-950/[0.08] dark:hover:border-brand-500/40"
                     )}
                   >
                     <div className="flex items-start justify-between gap-3">

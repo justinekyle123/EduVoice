@@ -24,6 +24,9 @@ import {
 export const siteConfig = {
   name: "EduVoice",
   tagline: "Voice Chat Learning Assistant with Quiz System",
+  // Brand mark. The artwork is a rounded navy tile with a transparent
+  // surround, so it needs no extra clipping or background colour.
+  logo: "/Edu-Logo.jpg",
   description:
     "EduVoice is your AI learning companion for students — ask questions by voice, get spoken answers, generate quizzes from your notes, and learn hands-free in English, Filipino, or Cebuano.",
 };
