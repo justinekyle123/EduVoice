@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
 import {
@@ -23,9 +23,19 @@ import { VoiceMode } from "./VoiceMode";
 import { chatModes, type ChatMode } from "../lib/modes";
 import { providerDotClass, providerLabel } from "../lib/providers";
 import { speechLangFor, type DetectedLanguage } from "../lib/detect";
-import { TTS_VOICES, DEFAULT_TTS_VOICE } from "../lib/voices";
+import {
+  TTS_VOICES,
+  DEFAULT_TTS_VOICE,
+  hasVoiceChoice,
+  voiceStyleForMode,
+} from "../lib/voices";
+import { getSpeechEngine } from "../lib/speechEngine";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import { useSpeechSynthesis } from "../hooks/useSpeechSynthesis";
+import type {
+  VoiceTurnHandlers,
+  VoiceTurnMeta,
+} from "../hooks/useVoiceSession";
 import {
   getChatMessages,
   retryAssistantMessage,
@@ -62,6 +72,22 @@ function formatBytes(bytes: number) {
 const THREAD_WIDTH = "mx-auto w-full max-w-3xl px-4 sm:px-6";
 
 /**
+ * Events streamed by /api/chat/voice. Rows are JSON, so date columns arrive as
+ * strings — the UI only reads id/content/role/language/tone/provider.
+ */
+type VoiceEvent =
+  | {
+      type: "turn";
+      sessionId: string;
+      createdSession: ChatSessionRow | null;
+      userMessage: ChatMessageRow;
+      language: string;
+    }
+  | { type: "delta"; text: string }
+  | { type: "done"; assistantMessage: ChatMessageRow | null; partial?: boolean }
+  | { type: "error"; error: string };
+
+/**
  * Chat UI. The active session comes from the URL:
  *   /dashboard/chat        → new chat
  *   /dashboard/chat/<id>   → existing session (see chat/[sessionId]/page.tsx)
@@ -82,6 +108,8 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
   const [ttsVoice, setTtsVoice] = useState<string>(DEFAULT_TTS_VOICE);
   const [retrying, setRetrying] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
+  // Session URL produced by a voice turn, applied once the call has ended.
+  const pendingVoiceUrlRef = useRef<string | null>(null);
   // Composer "+" menu (attachments + mode switching) and its picked files.
   const [menuOpen, setMenuOpen] = useState(false);
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -100,6 +128,7 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
   const {
     supported: ttsSupported,
     speakingId,
+    voice: ttsVoiceSource,
     speak,
     stop: stopSpeaking,
   } = useSpeechSynthesis();
@@ -202,7 +231,8 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
    * request failed. Voice mode reuses this so both surfaces share one path.
    */
   async function sendText(
-    raw: string
+    raw: string,
+    options?: { voiceMode?: boolean }
   ): Promise<{ id: string; content: string } | null> {
     const text = raw.trim();
     if (!text || sending) return null;
@@ -212,9 +242,12 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
 
     try {
       const res = await sendChatMessage({
-        sessionId: sessionId ?? null,
+        // A voice turn may have created the session while the URL still points
+        // at the new-chat route; use it rather than starting a second session.
+        sessionId: sessionId ?? session?.id ?? null,
         mode,
         content: text,
+        voiceMode: options?.voiceMode,
       });
 
       if (res.error) setError(res.error);
@@ -297,6 +330,135 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
     if (listening) stop();
     else start(speechLangFor("en"));
   }
+
+  /** Voice turns land in the same thread, so keep the message list in sync. */
+  const handleVoiceTurn = useCallback(
+    (meta: VoiceTurnMeta) => {
+      setMessages((prev) => [...prev, meta.userMessage as ChatMessageRow]);
+      const created = meta.createdSession;
+      if (!created) return;
+
+      const title =
+        meta.userMessage.content.length > 60
+          ? `${meta.userMessage.content.slice(0, 60).trimEnd()}…`
+          : meta.userMessage.content;
+      loadedForRef.current = created.id;
+      setSession({
+        ...(created as ChatSessionRow),
+        mode,
+        language: meta.language,
+        title,
+      });
+
+      // `/dashboard/chat` and `/dashboard/chat/<id>` are separate routes, so
+      // navigating swaps the page component and remounts this one — which would
+      // hang up on a live voice call the moment its first turn created the
+      // session. Hold the URL change until the student ends the call.
+      const url = `/dashboard/chat/${created.id}`;
+      if (voiceOpen) pendingVoiceUrlRef.current = url;
+      else router.replace(url);
+    },
+    [mode, router, voiceOpen]
+  );
+
+  /** Leave voice mode, then catch the URL up with the session it created. */
+  const closeVoiceMode = useCallback(() => {
+    setVoiceOpen(false);
+    const pending = pendingVoiceUrlRef.current;
+    if (!pending) return;
+    pendingVoiceUrlRef.current = null;
+    router.replace(pending);
+  }, [router]);
+
+  /**
+   * One voice turn over SSE (/api/chat/voice). The reply arrives in fragments so
+   * voice mode can start speaking the first sentence while the rest is still
+   * being written — this is what removes the old multi-second silence before the
+   * tutor said anything.
+   */
+  const voiceTurn = useCallback(
+    async (text: string, handlers: VoiceTurnHandlers, signal: AbortSignal) => {
+      const fail = (error: string) =>
+        handlers.onDone?.({ assistantMessage: null, error });
+
+      setSending(true);
+      setError(null);
+
+      try {
+        const res = await fetch("/api/chat/voice", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId: sessionId ?? null,
+            mode,
+            content: text,
+          }),
+          signal,
+        });
+
+        if (!res.ok || !res.body) {
+          const payload = (await res.json().catch(() => null)) as {
+            error?: string;
+          } | null;
+          fail(payload?.error ?? "The voice request failed.");
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        const handleFrame = (raw: string) => {
+          const line = raw.split("\n").find((row) => row.startsWith("data:"));
+          if (!line) return;
+
+          let event: VoiceEvent;
+          try {
+            event = JSON.parse(line.slice(5).trim()) as VoiceEvent;
+          } catch {
+            return;
+          }
+
+          if (event.type === "turn") {
+            handlers.onTurn?.({
+              sessionId: event.sessionId,
+              createdSession: event.createdSession,
+              userMessage: event.userMessage,
+              language: event.language,
+            });
+          } else if (event.type === "delta") {
+            handlers.onDelta?.(event.text);
+          } else if (event.type === "done") {
+            const saved = event.assistantMessage;
+            if (saved) setMessages((prev) => [...prev, saved]);
+            handlers.onDone?.({ assistantMessage: saved });
+          } else {
+            fail(event.error);
+          }
+        };
+
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let boundary = buffer.indexOf("\n\n");
+          while (boundary >= 0) {
+            handleFrame(buffer.slice(0, boundary));
+            buffer = buffer.slice(boundary + 2);
+            boundary = buffer.indexOf("\n\n");
+          }
+        }
+      } catch (err) {
+        // Interrupting (talking over the tutor) aborts the request — that is a
+        // normal part of the conversation, not something to report.
+        if (signal.aborted) return;
+        fail(err instanceof Error ? err.message : "The voice request failed.");
+      } finally {
+        setSending(false);
+      }
+    },
+    [sessionId, mode]
+  );
 
   // Claude-style empty state: greeting with the composer floating mid-screen.
   const showEmptyState = !loading && messages.length === 0 && !sending;
@@ -487,8 +649,12 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
           <button
             type="button"
             onClick={() => {
-              // Hand the mic over to voice mode's own recognizer.
+              // Hand the mic over to voice mode's own recognizer, and unlock
+              // audio while this click still counts as a user gesture —
+              // otherwise the browser blocks the first spoken reply.
               stop();
+              stopSpeaking();
+              getSpeechEngine().unlock();
               setVoiceOpen(true);
             }}
             title="Start hands-free voice mode"
@@ -500,21 +666,23 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
-          <label className="hidden items-center gap-1.5 sm:inline-flex">
-            <Volume2 className="h-3.5 w-3.5 text-zinc-400 dark:text-zinc-500" />
-            <select
-              value={ttsVoice}
-              onChange={(e) => setTtsVoice(e.target.value)}
-              aria-label="Tutor voice"
-              className="max-w-[8rem] rounded-full bg-transparent py-1.5 text-xs font-medium text-zinc-500 outline-none transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-            >
-              {TTS_VOICES.map((v) => (
-                <option key={v.name} value={v.name}>
-                  {v.name} — {v.description}
-                </option>
-              ))}
-            </select>
-          </label>
+          {hasVoiceChoice && (
+            <label className="hidden items-center gap-1.5 sm:inline-flex">
+              <Volume2 className="h-3.5 w-3.5 text-zinc-400 dark:text-zinc-500" />
+              <select
+                value={ttsVoice}
+                onChange={(e) => setTtsVoice(e.target.value)}
+                aria-label="Tutor voice"
+                className="max-w-[8rem] rounded-full bg-transparent py-1.5 text-xs font-medium text-zinc-500 outline-none transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+              >
+                {TTS_VOICES.map((v) => (
+                  <option key={v.name} value={v.name}>
+                    {v.name} — {v.description}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
 
           <button
             type="button"
@@ -562,16 +730,16 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
       {voiceOpen && (
         <VoiceMode
           title={session?.title ?? "New chat"}
+          mode={mode}
           modeLabel={chatModes.find((m) => m.id === mode)?.label ?? "Chat"}
           lang={speechLangFor(
             (session?.language as DetectedLanguage | undefined) ?? "en"
           )}
           ttsVoice={ttsVoice}
-          speakingId={speakingId}
-          speak={speak}
-          stopSpeaking={stopSpeaking}
-          onSubmit={sendText}
-          onClose={() => setVoiceOpen(false)}
+          onVoiceChange={setTtsVoice}
+          transport={voiceTurn}
+          onTurn={handleVoiceTurn}
+          onClose={closeVoiceMode}
         />
       )}
     </AnimatePresence>
@@ -699,7 +867,10 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
                                           | DetectedLanguage
                                           | undefined) ?? "en"
                                       ),
-                                      ttsVoice
+                                      ttsVoice,
+                                      // Read the reply in the tone of the mode
+                                      // it was written for.
+                                      { style: voiceStyleForMode(mode) }
                                     )
                               }
                               className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
@@ -711,6 +882,14 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
                               )}
                               {isSpeaking ? "Stop" : "Listen"}
                             </button>
+                            {isSpeaking && ttsVoiceSource === "browser" && (
+                              <span
+                                title="Gemini's voice is unavailable (free-tier quota), so your browser's voice is used instead."
+                                className="text-[11px] text-amber-600 dark:text-amber-400"
+                              >
+                                browser voice
+                              </span>
+                            )}
                           </div>
                         )}
                       </div>

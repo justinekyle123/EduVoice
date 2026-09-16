@@ -54,9 +54,29 @@ export const chatModes: ChatModeMeta[] = [
   },
 ];
 
+/**
+ * Extra rules for hands-free voice turns.
+ *
+ * Spoken replies have to be short and read well out loud: a four-paragraph
+ * answer takes half a minute to say and buries the point the student asked
+ * about. Short replies are also what makes voice mode feel responsive, since
+ * every sentence is synthesized as soon as the model writes it.
+ */
+export const VOICE_MODE_INSTRUCTION = `You are speaking out loud in a live voice conversation with the student.
+- Reply in ONE short spoken turn: at most 3 or 4 sentences, then stop.
+- No lists, headings, tables, Markdown or code blocks — plain spoken sentences only.
+- Answer the question first; add at most one short example if it truly helps.
+- Write things the way they are said aloud ("two thirds", "x squared", "around five kilometres").
+- Never describe your formatting or mention that this is voice mode.`;
+
 export function instructionFor(mode: ChatMode): string {
   return (
     chatModes.find((m) => m.id === mode)?.instruction ??
     EDUVOICE_SYSTEM_INSTRUCTION
   );
+}
+
+/** System instruction for a spoken turn: mode rules plus the voice rules. */
+export function voiceInstructionFor(mode: ChatMode): string {
+  return `${instructionFor(mode)}\n\n${VOICE_MODE_INSTRUCTION}`;
 }

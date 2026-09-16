@@ -1,142 +1,70 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
-import { synthesizeSpeech } from "../server/tts";
-import { DEFAULT_TTS_VOICE } from "../lib/voices";
+"use client";
+
+import { useCallback, useSyncExternalStore } from "react";
+import { DEFAULT_TTS_VOICE, type VoiceStyle } from "../lib/voices";
+import { getSpeechEngine, type SpeechSnapshot } from "../lib/speechEngine";
 
 /**
  * Text-to-speech for AI responses (feature 6.1).
  *
- * Primary: Gemini TTS via a server action (Google AI Studio free tier) for
- * natural voices in English, Filipino, and Cebuano. Audio is cached per text
- * so replaying a message doesn't re-call the API.
- *
- * Fallback: the browser speechSynthesis API (offline, no quota) whenever the
- * Gemini call fails (missing API key, rate limit, network error, …).
+ * Playback lives in one shared engine (lib/speechEngine.ts): Gemini TTS for
+ * natural English/Filipino/Cebuano voices, chunked so audio starts as soon as
+ * the first sentence is ready, with the browser's own voices as a fallback.
+ * This hook is the React face of it — the speaking message id and helpers.
  */
 
 const emptySubscribe = () => () => {};
 
-const audioCache = new Map<string, string>();
+/** Stable server snapshot (a fresh object here would loop the store). */
+const IDLE: SpeechSnapshot = { speakingId: null, status: "idle", voice: "gemini" };
 
-/** Client-only: true when audio playback or speech synthesis is possible. */
+/** Client-only: true when audio can be played or synthesized. */
 function useSupported() {
   return useSyncExternalStore(
     emptySubscribe,
     () =>
       typeof window !== "undefined" &&
-      (typeof Audio !== "undefined" || "speechSynthesis" in window),
+      (typeof AudioContext !== "undefined" ||
+        "webkitAudioContext" in window ||
+        "speechSynthesis" in window),
     () => false
   );
 }
 
 export function useSpeechSynthesis() {
   const supported = useSupported();
-  const [speakingId, setSpeakingId] = useState<string | null>(null);
-  const currentRef = useRef<string | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-
-  const clearSpeaking = useCallback(() => {
-    currentRef.current = null;
-    setSpeakingId(null);
-  }, []);
-
-  const stop = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.src = "";
-      audioRef.current = null;
-    }
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
-    }
-    clearSpeaking();
-  }, [clearSpeaking]);
-
-  /** Play a (cached) data URI through a fresh <audio> element. */
-  const playAudio = useCallback(
-    (id: string, uri: string) => {
-      if (typeof window === "undefined") return;
-      const audio = new Audio(uri);
-      audioRef.current = audio;
-      audio.onended = () => {
-        audioRef.current = null;
-        clearSpeaking();
-      };
-      audio.onerror = () => {
-        audioRef.current = null;
-        clearSpeaking();
-      };
-      currentRef.current = id;
-      setSpeakingId(id);
-      void audio.play().catch(() => {
-        audioRef.current = null;
-        clearSpeaking();
-      });
-    },
-    [clearSpeaking]
-  );
-
-  /** Fallback path using the browser's built-in voices. */
-  const speakBrowser = useCallback(
-    (id: string, text: string, lang: string) => {
-      if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-      window.speechSynthesis.cancel();
-
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = lang;
-      utterance.rate = 1;
-      const voices = window.speechSynthesis.getVoices();
-      const base = lang.split("-")[0].toLowerCase();
-      const match =
-        voices.find((v) => v.lang.toLowerCase().startsWith(base)) ??
-        voices.find((v) => v.lang.toLowerCase().startsWith("en"));
-      if (match) utterance.voice = match;
-
-      utterance.onend = clearSpeaking;
-      utterance.onerror = clearSpeaking;
-
-      currentRef.current = id;
-      setSpeakingId(id);
-      window.speechSynthesis.speak(utterance);
-    },
-    [clearSpeaking]
+  const snapshot: SpeechSnapshot = useSyncExternalStore(
+    getSpeechEngine().subscribe,
+    getSpeechEngine().getSnapshot,
+    () => IDLE
   );
 
   const speak = useCallback(
-    (id: string, text: string, lang: string, voice: string = DEFAULT_TTS_VOICE) => {
-      if (typeof window === "undefined") return;
-      stop();
-
-      // Cache per voice so switching voices doesn't replay stale audio.
-      const cacheKey = `${voice}|${text}`;
-      const cached = audioCache.get(cacheKey);
-      if (cached) {
-        playAudio(id, cached);
-        return;
-      }
-
-      synthesizeSpeech({ text, voice })
-        .then((res) => {
-          if ("error" in res) {
-            throw new Error(res.error ?? "TTS failed");
-          }
-          audioCache.set(cacheKey, res.audio);
-          playAudio(id, res.audio);
-        })
-        .catch(() => {
-          // Gemini unavailable (no key / quota / network) — use built-in voices.
-          speakBrowser(id, text, lang);
-        });
+    (
+      id: string,
+      text: string,
+      lang: string,
+      voice: string = DEFAULT_TTS_VOICE,
+      options?: { maxChars?: number; style?: VoiceStyle }
+    ) => {
+      getSpeechEngine().speak(id, text, lang, voice, options);
     },
-    [stop, playAudio, speakBrowser]
+    []
   );
 
-  useEffect(() => stop, [stop]);
+  const stop = useCallback(() => getSpeechEngine().stop(), []);
 
-  return { supported, speakingId, speak, stop };
+  return {
+    supported,
+    speakingId: snapshot.speakingId,
+    /** True while audio for a message is loading or playing. */
+    speaking: snapshot.status !== "idle",
+    /**
+     * Voice the current audio came from: "browser" means Gemini TTS was
+     * unavailable (usually a spent free-tier quota) and the fallback is in use.
+     */
+    voice: snapshot.voice,
+    speak,
+    stop,
+  };
 }

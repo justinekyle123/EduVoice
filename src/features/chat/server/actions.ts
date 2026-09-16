@@ -1,30 +1,20 @@
 "use server";
 
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
-import { auth, currentUser } from "@clerk/nextjs/server";
+import { auth } from "@clerk/nextjs/server";
 import { db } from "@/lib/db";
 import { chatMessages, chatSessions } from "@/lib/db/schema";
-import { getUserByClerkId, upsertUser } from "@/features/auth/server/users";
 import { generateText } from "@/lib/ai";
 import { instructionFor, type ChatMode } from "../lib/modes";
-import { detectLanguage, detectTone } from "../lib/detect";
+import {
+  beginTurn,
+  requireUserId,
+  saveAssistantReply,
+} from "./turn";
 
-// The chat tables key rows by the Postgres `users.id` (uuid), but Clerk's
-// `auth()` returns the Clerk user id (e.g. "user_…"). Resolve the Clerk id to
-// the app's user row, creating it on demand if the Clerk webhook hasn't synced
-// the user yet (same pattern as the dashboard).
-async function requireUserId(clerkId: string): Promise<string> {
-  let user = await getUserByClerkId(clerkId);
-  if (!user) {
-    const clerkUser = await currentUser();
-    user = await upsertUser({
-      clerkId,
-      email: clerkUser?.emailAddresses[0]?.emailAddress ?? "",
-      name: clerkUser?.fullName ?? clerkUser?.username ?? null,
-    });
-  }
-  return user.id;
-}
+// Session reads/writes for typed chat. The turn itself (persisting the student
+// message and the reply) is shared with the streaming voice route — see
+// ./turn.ts.
 
 // ---------------------------------------------------------------------------
 // Session list
@@ -102,66 +92,20 @@ export async function sendChatMessage(input: {
   sessionId: string | null;
   mode: ChatMode;
   content: string;
+  /** Voice turns prioritize latency over sending the entire long transcript. */
+  voiceMode?: boolean;
 }) {
   const { userId: clerkId } = await auth();
   if (!clerkId) throw new Error("Not authenticated");
   const userId = await requireUserId(clerkId);
 
-  const content = input.content.trim();
-  if (!content) throw new Error("Message cannot be empty");
-
-  const language = detectLanguage(content);
-  const tone = detectTone(content);
-
-  let sessionId = input.sessionId;
-  let createdSession = null;
-
-  if (sessionId) {
-    // Ownership check: the session must belong to the signed-in user.
-    const [session] = await db
-      .select({ id: chatSessions.id })
-      .from(chatSessions)
-      .where(and(eq(chatSessions.id, sessionId), eq(chatSessions.userId, userId)));
-    if (!session) throw new Error("Session not found");
-  } else {
-    const [created] = await db
-      .insert(chatSessions)
-      .values({ userId, mode: input.mode, language })
-      .returning();
-    sessionId = created.id;
-    createdSession = created;
-  }
-
-  // Conversation history for the AI (previous messages, oldest first).
-  const historyRows = await db
-    .select()
-    .from(chatMessages)
-    .where(eq(chatMessages.sessionId, sessionId))
-    .orderBy(asc(chatMessages.createdAt));
-
-  const history = historyRows.map((m) => ({
-    role: (m.role === "user" ? "user" : "model") as "user" | "model",
-    parts: [{ text: m.content }],
-  }));
-
-  // Save the user message (with detected language + tone).
-  const [userMessage] = await db
-    .insert(chatMessages)
-    .values({ sessionId, role: "user", content, language, tone })
-    .returning();
-
-  // First message becomes the session title.
-  const isFirstMessage = historyRows.length === 0;
-  const title = isFirstMessage
-    ? content.length > 60
-      ? `${content.slice(0, 60).trimEnd()}…`
-      : content
-    : undefined;
-
-  await db
-    .update(chatSessions)
-    .set({ mode: input.mode, language, title: title ?? undefined, updatedAt: new Date() })
-    .where(eq(chatSessions.id, sessionId));
+  const { sessionId, createdSession, userMessage, language, history } =
+    await beginTurn(userId, {
+      sessionId: input.sessionId,
+      mode: input.mode,
+      content: input.content,
+      historyLimit: input.voiceMode ? 12 : undefined,
+    });
 
   // Call the AI (Gemini, rotating across the configured AI Studio keys) and
   // persist the reply together with the key slot that answered.
@@ -170,15 +114,11 @@ export async function sendChatMessage(input: {
 
   try {
     const { text: reply, provider } = await generateText({
-      prompt: content,
+      prompt: userMessage.content,
       systemInstruction: instructionFor(input.mode),
       history,
     });
-    const [saved] = await db
-      .insert(chatMessages)
-      .values({ sessionId, role: "assistant", content: reply, provider })
-      .returning();
-    assistantMessage = saved;
+    assistantMessage = await saveAssistantReply(sessionId, reply, provider);
   } catch (err) {
     error = err instanceof Error ? err.message : "AI request failed";
     console.error("[chat] AI request failed:", error);

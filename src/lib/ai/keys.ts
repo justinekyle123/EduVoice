@@ -109,7 +109,7 @@ export function hasReadyKey(now = Date.now()): boolean {
 }
 
 /** Client for a slot, built on first use and reused afterwards. */
-function clientFor(key: GeminiKey): GoogleGenAI {
+export function clientFor(key: GeminiKey): GoogleGenAI {
   let client = clients.get(key.slot);
   if (!client) {
     client = new GoogleGenAI({ apiKey: key.key });
@@ -279,6 +279,36 @@ async function runWithBusyRetries<T>(
       await sleep(wait);
     }
   }
+}
+
+/**
+ * Park a key after a failure, following the pool's cooldown policy. Used by the
+ * streaming path (./gemini.ts), which has to decide per failed attempt rather
+ * than per whole request.
+ */
+export function parkKeyForFailure(
+  slot: number,
+  kind: FailureKind,
+  err: unknown
+): void {
+  if (kind === "auth") {
+    markDisabled(slot);
+    console.error(
+      `[ai] Gemini key ${slot} was rejected — disabled for this process`
+    );
+    return;
+  }
+  if (kind === "busy") {
+    markCooldown(slot, BUSY_COOLDOWN_MS);
+    return;
+  }
+  // A per-day allowance won't return in the few seconds the retry hint
+  // suggests, so park the key for the full window instead of hammering it.
+  const perDay = /PerDay|per day/i.test(messageOf(err));
+  markCooldown(
+    slot,
+    perDay ? MAX_COOLDOWN_MS : retryDelayMs(err) ?? MIN_COOLDOWN_MS
+  );
 }
 
 /**

@@ -1,6 +1,15 @@
 import type { Content } from "@google/genai";
 import { EDUVOICE_SYSTEM_INSTRUCTION } from "@/lib/ai/persona";
-import { withGeminiKey, type AiFailure } from "./keys";
+import {
+  classifyFailure,
+  clientFor,
+  parkKeyForFailure,
+  markSuccess,
+  pickKey,
+  withGeminiKey,
+  type AiFailure,
+  type FailureKind,
+} from "./keys";
 
 // Server-only Gemini helper. Never import this from client components —
 // the API key must stay on the server.
@@ -105,6 +114,110 @@ export async function generateText({
   }
 
   throw lastError;
+}
+
+// ---------------------------------------------------------------------------
+// Streaming (voice mode)
+// ---------------------------------------------------------------------------
+
+export type TextStreamChunk = {
+  /** Text that arrived since the previous chunk. */
+  delta: string;
+  /** Slot of the API key that answered. */
+  slot: number;
+  /** Model in the chain that is answering. */
+  model: string;
+};
+
+export type GenerateTextStreamInput = {
+  prompt: string;
+  systemInstruction?: string;
+  history?: Content[];
+  /** Aborts the upstream request when the student hangs up or interrupts. */
+  signal?: AbortSignal;
+};
+
+/**
+ * Stream a reply token by token.
+ *
+ * Voice mode speaks each sentence as soon as it lands, so the student hears the
+ * tutor start answering while the rest of the reply is still being written.
+ *
+ * Rotation works as in generateText — least-recently-used key first, then the
+ * next model — with one extra rule: a failure is only retried on another key or
+ * model while *nothing has been spoken yet*. Once words are on their way,
+ * restarting would repeat or contradict them, so the error is surfaced instead.
+ */
+export async function* generateTextStream({
+  prompt,
+  systemInstruction = EDUVOICE_SYSTEM_INSTRUCTION,
+  history = [],
+  signal,
+}: GenerateTextStreamInput): AsyncGenerator<TextStreamChunk> {
+  const models = modelChain();
+  const tried = new Set<number>();
+  let lastError: unknown = null;
+  let lastKind: FailureKind = "quota";
+
+  for (let index = 0; index < models.length; index += 1) {
+    const model = models[index];
+
+    for (;;) {
+      const key = pickKey({ exclude: tried });
+      if (!key) break;
+      tried.add(key.slot);
+
+      let stream: AsyncGenerator<{ text?: string }>;
+      try {
+        stream = await clientFor(key).models.generateContentStream({
+          model,
+          contents: [...history, { role: "user", parts: [{ text: prompt }] }],
+          config: { systemInstruction, abortSignal: signal },
+        });
+      } catch (err) {
+        // The request never started, so another key can take it over.
+        lastError = err;
+        lastKind = classifyFailure(err);
+        if (lastKind === "fatal") throw err;
+        parkKeyForFailure(key.slot, lastKind, err);
+        continue;
+      }
+
+      let emitted = false;
+      try {
+        for await (const chunk of stream) {
+          const delta = chunk.text ?? "";
+          if (!delta) continue;
+          emitted = true;
+          yield { delta, slot: key.slot, model };
+        }
+        markSuccess(key.slot);
+        return;
+      } catch (err) {
+        lastError = err;
+        lastKind = classifyFailure(err);
+        parkKeyForFailure(key.slot, lastKind, err);
+        if (lastKind === "fatal" || emitted) throw err;
+        continue;
+      }
+    }
+
+    // A spent quota is metered per model, so the next model in the chain may
+    // still have its own daily allowance. Any other failure would repeat there.
+    if (lastKind !== "quota" && lastKind !== "busy") break;
+    const next = models[index + 1];
+    if (next) {
+      console.warn(`[ai] stream: ${model} unavailable — trying ${next}`);
+      tried.clear();
+    }
+  }
+
+  if (lastKind === "auth") {
+    throw new Error(
+      "Every configured Gemini API key was rejected. Check GEMINI_API_KEY, GEMINI_API_KEY_2 and GEMINI_API_KEY_3."
+    );
+  }
+  throw lastError ?? new Error("The AI could not answer right now.");
 }
 
 /** Quick connectivity check — used by a test script and diagnostics. */
