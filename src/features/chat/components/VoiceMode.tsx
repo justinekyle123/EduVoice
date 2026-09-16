@@ -1,215 +1,134 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { motion } from "motion/react";
+import { useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import {
   AudioLines,
   Mic,
   MicOff,
   PhoneOff,
+  RotateCcw,
   Send,
   Square,
-  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LogoMark } from "@/components/layout/Logo";
-import { detectLanguage, speechLangFor } from "../lib/detect";
-import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
-
-/** The slice of a saved assistant message voice mode needs to read the reply. */
-type AssistantTurn = { id: string; content: string };
+import {
+  TTS_VOICES,
+  VOICE_STYLES,
+  hasVoiceChoice,
+  voiceStyleForMode,
+} from "../lib/voices";
+import { VoiceOrb } from "./VoiceOrb";
+import {
+  useVoiceSession,
+  type VoiceTransport,
+  type VoiceTurnMeta,
+} from "../hooks/useVoiceSession";
 
 type VoiceModeProps = {
   title: string;
+  /** Chat mode id — decides how the replies are read aloud. */
+  mode: string;
   modeLabel: string;
-  /** BCP-47 tag the recognizer listens for. */
+  /** BCP-47 tag the recognizer starts from (the session's language). */
   lang: string;
   ttsVoice: string;
-  speakingId: string | null;
-  speak: (id: string, text: string, lang: string, voice?: string) => void;
-  stopSpeaking: () => void;
-  /** Sends one turn through the normal chat pipeline; null means it failed. */
-  onSubmit: (text: string) => Promise<AssistantTurn | null>;
+  onVoiceChange: (voice: string) => void;
+  /** Sends one spoken turn to the server and streams text back. */
+  transport: VoiceTransport;
+  /** Fired once a turn is saved, so the chat thread follows along. */
+  onTurn: (meta: VoiceTurnMeta) => void;
   onClose: () => void;
 };
 
-type Phase = "listening" | "thinking" | "speaking" | "paused";
-type LogEntry = { id: string; role: "user" | "assistant"; text: string };
+function formatClock(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${minutes}:${rest.toString().padStart(2, "0")}`;
+}
 
 /**
- * Hands-free voice mode. One utterance per turn: the mic captures a question,
- * the reply is sent through the usual chat action, the tutor's answer is spoken
- * aloud, and then the mic re-opens on its own — until the student hangs up.
- * Browsers without the Web Speech API fall back to a text box that still speaks
- * the replies.
+ * Hands-free voice mode.
+ *
+ * The conversation is the main surface: everything said is shown in full, at
+ * reading size, in a panel that fills the window and follows the live reply as
+ * it is spoken. The orb sits beside it (above it on phones) so the student can
+ * always look up and see whether the tutor is listening, thinking or talking.
+ * Controls live in the top-left corner: mute, interrupt, hang up.
  */
 export function VoiceMode({
   title,
+  mode,
   modeLabel,
   lang,
   ttsVoice,
-  speakingId,
-  speak,
-  stopSpeaking,
-  onSubmit,
+  onVoiceChange,
+  transport,
+  onTurn,
   onClose,
 }: VoiceModeProps) {
-  const [phase, setPhase] = useState<Phase>("listening");
-  const [muted, setMuted] = useState(false);
-  const [log, setLog] = useState<LogEntry[]>([]);
+  const session = useVoiceSession({
+    lang,
+    ttsVoice,
+    mode,
+    transport,
+    onTurn,
+    onEnd: onClose,
+  });
+
   const [typed, setTyped] = useState("");
-  // Read inside the recognition callback, which is created once and would
-  // otherwise close over a stale phase.
-  const phaseRef = useRef<Phase>("listening");
-  const stopRef = useRef<() => void>(() => {});
-  const submitRef = useRef<(text: string) => void>(() => {});
-  // True once TTS has actually started, so we don't treat the gap while Gemini
-  // is generating audio as "finished speaking".
-  const spokeRef = useRef(false);
-  const seqRef = useRef(0);
-  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const [showVoices, setShowVoices] = useState(false);
+  const threadRef = useRef<HTMLDivElement | null>(null);
+  /** Auto-follow the reply unless the student scrolls up to read. */
+  const followRef = useRef(true);
 
+  const style = VOICE_STYLES[voiceStyleForMode(mode)];
+  const busy = session.phase === "thinking" || session.phase === "speaking";
+  const lastEntry = session.log[session.log.length - 1];
+  const liveId =
+    lastEntry?.role === "assistant" && busy ? lastEntry.id : undefined;
+
+  // Keep the newest words in view, but never fight the student's own scrolling.
   useEffect(() => {
-    phaseRef.current = phase;
-  }, [phase]);
+    const node = threadRef.current;
+    if (!node || !followRef.current) return;
+    node.scrollTop = node.scrollHeight;
+  }, [session.log, session.interim]);
 
-  /** Send one turn, show it in the transcript, then speak the reply. */
-  const submitTurn = useCallback(
-    async (raw: string) => {
-      const text = raw.trim();
-      if (!text) return;
-      if (phaseRef.current === "thinking" || phaseRef.current === "speaking") {
-        return;
-      }
+  function onScroll() {
+    const node = threadRef.current;
+    if (!node) return;
+    followRef.current =
+      node.scrollHeight - node.scrollTop - node.clientHeight < 80;
+  }
 
-      const turn = ++seqRef.current;
-      setPhase("thinking");
-      setLog((prev) => [...prev, { id: `u${turn}`, role: "user", text }]);
-
-      const reply = await onSubmit(text);
-
-      if (!reply) {
-        setLog((prev) => [
-          ...prev,
-          {
-            id: `e${turn}`,
-            role: "assistant",
-            text: "I couldn't reach the tutor. Let's try that again.",
-          },
-        ]);
-        setPhase("listening");
-        return;
-      }
-
-      setLog((prev) => [
-        ...prev,
-        { id: reply.id, role: "assistant", text: reply.content },
-      ]);
-      setPhase("speaking");
-      speak(
-        reply.id,
-        reply.content,
-        speechLangFor(detectLanguage(text)),
-        ttsVoice
-      );
-    },
-    [onSubmit, speak, ttsVoice]
-  );
-
-  useEffect(() => {
-    submitRef.current = (text: string) => void submitTurn(text);
-  }, [submitTurn]);
-
-  // One final result = one finished question, which is our turn boundary.
-  const onTranscript = useCallback((finalText: string) => {
-    if (phaseRef.current !== "listening") return;
-    stopRef.current();
-    submitRef.current(finalText);
-  }, []);
-
-  const { supported, listening, interim, start, stop } =
-    useSpeechRecognition(onTranscript);
-
-  useEffect(() => {
-    stopRef.current = stop;
-  }, [stop]);
-
-  // Keep the mic open in the listening phase — across turns and across the
-  // browser's own silence timeouts.
-  useEffect(() => {
-    if (!supported || muted || phase !== "listening" || listening) return;
-    const timer = window.setTimeout(() => start(lang), 300);
-    return () => window.clearTimeout(timer);
-  }, [supported, muted, phase, listening, start, lang]);
-
-  // Spoken reply finished → listen again.
-  useEffect(() => {
-    if (phase !== "speaking") {
-      spokeRef.current = false;
-      return;
-    }
-    if (speakingId !== null) {
-      spokeRef.current = true;
-      return;
-    }
-    if (spokeRef.current) setPhase("listening");
-  }, [phase, speakingId]);
-
-  // Safety net: if TTS never reports speaking, don't leave the student waiting.
-  useEffect(() => {
-    if (phase !== "speaking") return;
-    const timer = window.setTimeout(() => setPhase("listening"), 60000);
-    return () => window.clearTimeout(timer);
-  }, [phase]);
-
-  const endSession = useCallback(() => {
-    // Pause first: it keeps the restart effect from re-opening the mic during
-    // the exit animation.
-    setPhase("paused");
-    stopRef.current();
-    stopSpeaking();
-    onClose();
-  }, [stopSpeaking, onClose]);
-
+  // Keyboard: space mutes, escape hangs up. Ignored while typing.
+  const { toggleMute, end } = session;
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") endSession();
+      const target = event.target as HTMLElement | null;
+      const typingFor =
+        target?.tagName === "INPUT" || target?.tagName === "TEXTAREA";
+      if (typingFor) return;
+
+      if (event.code === "Space") {
+        event.preventDefault();
+        toggleMute();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        end();
+      }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [endSession]);
+  }, [toggleMute, end]);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [log, interim]);
-
-  function toggleMute() {
-    if (muted) {
-      setMuted(false);
-      setPhase("listening");
-    } else {
-      setMuted(true);
-      setPhase("paused");
-      stopRef.current();
-    }
-  }
-
-  const active =
-    supported && (phase === "listening" || phase === "speaking");
-
-  const status = !supported
-    ? "Voice input isn't supported in this browser — type your question below."
-    : muted
-      ? "Muted — tap the mic to keep talking"
-      : phase === "listening"
-        ? interim
-          ? "Listening…"
-          : "Listening… just start talking"
-        : phase === "thinking"
-          ? "Thinking…"
-          : phase === "speaking"
-            ? "Speaking…"
-            : "Paused";
+  // If the mic can't be used, the typed fallback keeps voice mode usable —
+  // replies are still spoken aloud. (A missing Gemini voice is not a reason to
+  // type: the reply is still spoken, just in the browser's voice.)
+  const needsTyping = !session.recognitionReady || Boolean(session.notice);
+  const banner = session.error ?? session.notice ?? session.voiceNotice;
 
   return (
     <motion.div
@@ -222,161 +141,262 @@ export function VoiceMode({
       aria-modal="true"
       aria-label="Voice mode"
     >
-      {/* Header */}
-      <header className="flex items-center gap-3 px-4 py-3 sm:px-6">
-        <LogoMark size={32} />
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+      {/* Controls (top-left) and session meta */}
+      <header className="flex shrink-0 items-center gap-2 px-3 py-3 sm:px-5">
+        <button
+          type="button"
+          onClick={session.toggleMute}
+          title={session.muted ? "Unmute the mic" : "Mute the mic (space)"}
+          aria-label={session.muted ? "Unmute the mic" : "Mute the mic"}
+          className={cn(
+            "flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors",
+            session.muted
+              ? "bg-zinc-900 text-white dark:bg-white dark:text-zinc-900"
+              : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+          )}
+        >
+          {session.muted ? (
+            <MicOff className="h-5 w-5" />
+          ) : (
+            <Mic className="h-5 w-5" />
+          )}
+        </button>
+
+        <AnimatePresence>
+          {busy && (
+            <motion.button
+              type="button"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              transition={{ duration: 0.12 }}
+              onClick={session.interrupt}
+              title="Interrupt the answer"
+              aria-label="Interrupt the answer"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-zinc-600 transition-colors hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+            >
+              <Square className="h-4 w-4" />
+            </motion.button>
+          )}
+        </AnimatePresence>
+
+        <button
+          type="button"
+          onClick={session.end}
+          title="End voice mode (esc)"
+          aria-label="End voice mode"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-red-500 text-white shadow-lg shadow-red-500/25 transition-colors hover:bg-red-600"
+        >
+          <PhoneOff className="h-5 w-5" />
+        </button>
+
+        <div className="ml-2 min-w-0 flex-1">
+          <p
+            title={title}
+            className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+          >
             {title}
           </p>
           <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">
-            {modeLabel} mode · hands-free
+            {modeLabel} mode · {style.label} voice · {formatClock(session.elapsed)}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={endSession}
-          aria-label="Close voice mode"
-          className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
-        >
-          <X className="h-5 w-5" />
-        </button>
+
+        {session.firstWordMs > 0 && (
+          <span
+            title="Time from your pause to the first spoken word"
+            className="hidden items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-[11px] font-semibold text-brand-800 sm:inline-flex dark:bg-brand-500/10 dark:text-brand-300"
+          >
+            <AudioLines className="h-3 w-3" />
+            {(session.firstWordMs / 1000).toFixed(1)}s
+          </span>
+        )}
       </header>
 
-      {/* Orb, status and live transcript */}
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-7 px-6">
-        <div className="relative flex h-32 w-32 items-center justify-center">
-          {active && (
-            <>
-              <span className="absolute inset-0 animate-ping rounded-full bg-brand-400/20" />
-              <span className="absolute inset-3 animate-ping rounded-full bg-brand-500/20 [animation-delay:250ms]" />
-            </>
-          )}
-          <span
-            className={cn(
-              "relative flex h-24 w-24 items-center justify-center rounded-full bg-gradient-to-br from-brand-400 to-brand-500 text-brand-950 shadow-xl shadow-brand-500/30",
-              phase === "thinking" && "animate-pulse",
-              muted && "opacity-50"
-            )}
-          >
-            {active ? (
-              <span className="flex h-8 items-end gap-1">
-                {[0, 1, 2, 3, 4].map((i) => (
-                  <span
-                    key={i}
-                    className="animate-equalizer w-1 origin-bottom rounded-full bg-brand-950/90"
-                    style={{ height: 24, animationDelay: `${i * 0.12}s` }}
-                  />
-                ))}
+      {/* Body: conversation (reading surface) + orb */}
+      <div className="flex min-h-0 flex-1 flex-col gap-3 px-3 pb-4 sm:px-5 lg:flex-row-reverse lg:gap-8 lg:px-8 lg:pb-8">
+        {/* Orb / status column — first on phones, right-hand side on desktop */}
+        <div className="flex shrink-0 flex-col items-center justify-center gap-2.5 lg:w-[320px] xl:w-[360px]">
+          <VoiceOrb
+            phase={session.phase}
+            micLevel={session.micLevel}
+            playbackAnalyser={session.playbackAnalyser}
+            className="h-[120px] w-[120px] shrink-0 sm:h-[150px] sm:w-[150px] lg:h-[260px] lg:w-[260px] xl:h-[300px] xl:w-[300px]"
+          />
+
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <span
+              className={cn(
+                "rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em]",
+                session.muted
+                  ? "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
+                  : "bg-brand-50 text-brand-800 dark:bg-brand-500/10 dark:text-brand-300"
+              )}
+            >
+              {session.muted
+                ? "Muted"
+                : session.phase === "listening"
+                  ? "Your turn"
+                  : session.phase === "thinking"
+                    ? "Tutor is thinking"
+                    : "Tutor is speaking"}
+            </span>
+            {session.turnCount > 0 && (
+              <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
+                {session.turnCount} {session.turnCount === 1 ? "turn" : "turns"}
               </span>
-            ) : (
-              <AudioLines className="h-8 w-8" />
             )}
-          </span>
+          </div>
+
+          <p
+            aria-live="polite"
+            className="max-w-xs text-center text-sm leading-6 text-zinc-500 dark:text-zinc-400 lg:max-w-[280px]"
+          >
+            {session.status}
+          </p>
+
+          {needsTyping && (
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                const text = typed.trim();
+                if (!text) return;
+                setTyped("");
+                session.submit(text);
+              }}
+              className="flex w-full max-w-md items-center gap-2 rounded-full border border-zinc-200 bg-white px-4 py-2 lg:max-w-[280px] dark:border-zinc-700 dark:bg-zinc-900"
+            >
+              <input
+                value={typed}
+                onChange={(event) => setTyped(event.target.value)}
+                placeholder="Type your question…"
+                aria-label="Type your question"
+                className="min-w-0 flex-1 bg-transparent text-sm text-zinc-800 outline-none placeholder:text-zinc-400 dark:text-zinc-100 dark:placeholder:text-zinc-500"
+              />
+              <button
+                type="submit"
+                disabled={!typed.trim()}
+                aria-label="Send question"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-400 to-brand-500 text-brand-950 disabled:opacity-30"
+              >
+                <Send className="h-4 w-4" />
+              </button>
+            </form>
+          )}
+
+          {showVoices && hasVoiceChoice && (
+            <div className="flex flex-wrap items-center justify-center gap-1.5">
+              {TTS_VOICES.map((voice) => (
+                <button
+                  key={voice.name}
+                  type="button"
+                  onClick={() => onVoiceChange(voice.name)}
+                  aria-pressed={voice.name === ttsVoice}
+                  className={cn(
+                    "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                    voice.name === ttsVoice
+                      ? "border-brand-300 bg-brand-50 text-brand-800 dark:border-brand-500/40 dark:bg-brand-500/10 dark:text-brand-300"
+                      : "border-zinc-200 text-zinc-600 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-700 dark:text-zinc-300 dark:hover:text-zinc-100"
+                  )}
+                >
+                  {voice.name} — {voice.description}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {hasVoiceChoice && !needsTyping && (
+            <button
+              type="button"
+              onClick={() => setShowVoices((open) => !open)}
+              aria-pressed={showVoices}
+              className="text-[11px] font-medium text-zinc-400 underline-offset-2 transition-colors hover:text-zinc-700 hover:underline dark:text-zinc-500 dark:hover:text-zinc-200"
+            >
+              Voice: {ttsVoice}
+            </button>
+          )}
+
+          <p className="hidden max-w-[280px] text-center text-[11px] leading-5 text-zinc-400 lg:block dark:text-zinc-500">
+            Just talk — pause and I&apos;ll answer. Say anything while I speak to
+            cut in.
+          </p>
         </div>
 
-        <p className="max-w-sm text-center text-sm leading-6 text-zinc-500 dark:text-zinc-400">
-          {status}
-        </p>
+        {/* Conversation column */}
+        <div className="flex min-h-0 flex-1 flex-col gap-2">
+          {banner && (
+            <div className="flex shrink-0 items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+              <div className="min-w-0 flex-1 break-words">{banner}</div>
+              {session.error && (
+                <button
+                  type="button"
+                  onClick={session.retry}
+                  className="flex shrink-0 items-center gap-1 rounded-lg bg-amber-600 px-2.5 py-1 font-medium text-white transition-colors hover:bg-amber-700"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  Retry
+                </button>
+              )}
+            </div>
+          )}
 
-        {(log.length > 0 || interim) && (
-          <div className="max-h-36 w-full max-w-md space-y-3 overflow-y-auto px-1">
-            {log.map((entry) => (
-              <p
-                key={entry.id}
-                className={cn(
-                  "whitespace-pre-wrap break-words text-sm leading-6",
-                  entry.role === "user"
-                    ? "text-right font-medium text-zinc-400 dark:text-zinc-500"
-                    : "text-zinc-700 dark:text-zinc-300"
-                )}
-              >
-                {entry.text}
-              </p>
-            ))}
-            {interim && (
-              <p className="whitespace-pre-wrap break-words text-right text-sm italic leading-6 text-zinc-400 dark:text-zinc-600">
-                {interim}
-              </p>
-            )}
-            <div ref={bottomRef} />
-          </div>
-        )}
-      </div>
-
-      {/* Controls */}
-      <div className="flex flex-col items-center gap-5 pb-10">
-        {!supported && (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const text = typed.trim();
-              if (!text) return;
-              setTyped("");
-              void submitTurn(text);
-            }}
-            className="flex w-full max-w-md items-center gap-2 rounded-full border border-zinc-200 bg-white px-4 py-2 dark:border-zinc-700 dark:bg-zinc-900"
+          <div
+            ref={threadRef}
+            onScroll={onScroll}
+            aria-live="polite"
+            aria-label="Voice conversation"
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-3xl border border-zinc-200 bg-white px-4 py-4 sm:px-7 sm:py-6 dark:border-zinc-800 dark:bg-zinc-900/40"
           >
-            <input
-              value={typed}
-              onChange={(e) => setTyped(e.target.value)}
-              placeholder="Type your question…"
-              aria-label="Type your question"
-              className="min-w-0 flex-1 bg-transparent text-sm text-zinc-800 outline-none placeholder:text-zinc-400 dark:text-zinc-100 dark:placeholder:text-zinc-500"
-            />
-            <button
-              type="submit"
-              disabled={!typed.trim()}
-              aria-label="Send question"
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-400 to-brand-500 text-brand-950 disabled:opacity-30"
-            >
-              <Send className="h-4 w-4" />
-            </button>
-          </form>
-        )}
-
-        <div className="flex items-center justify-center gap-4">
-          {supported &&
-            (phase === "speaking" ? (
-              <button
-                type="button"
-                onClick={() => stopSpeaking()}
-                title="Interrupt the answer"
-                aria-label="Interrupt the answer"
-                className="flex h-12 w-12 items-center justify-center rounded-full bg-zinc-100 text-zinc-600 transition-colors hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
-              >
-                <Square className="h-4 w-4" />
-              </button>
+            {session.log.length === 0 && !session.interim ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
+                <p className="text-[15px] text-zinc-400 dark:text-zinc-500">
+                  {session.muted
+                    ? "Muted — unmute the mic to start."
+                    : "Nothing said yet."}
+                </p>
+                <p className="text-sm text-zinc-400 dark:text-zinc-600">
+                  Ask a question out loud and the answer will appear here as it
+                  is spoken.
+                </p>
+              </div>
             ) : (
-              <button
-                type="button"
-                onClick={toggleMute}
-                title={muted ? "Unmute the mic" : "Mute the mic"}
-                aria-label={muted ? "Unmute the mic" : "Mute the mic"}
-                className={cn(
-                  "flex h-12 w-12 items-center justify-center rounded-full transition-colors",
-                  muted
-                    ? "bg-zinc-900 text-white dark:bg-white dark:text-zinc-900"
-                    : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+              <div className="mx-auto flex max-w-2xl flex-col gap-6">
+                {session.log.map((entry) =>
+                  entry.role === "user" ? (
+                    <div key={entry.id} className="flex flex-col items-end gap-1">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+                        You
+                      </span>
+                      <p className="max-w-[92%] rounded-3xl bg-zinc-100 px-4 py-2.5 text-[15px] leading-7 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-100">
+                        {entry.text}
+                      </p>
+                    </div>
+                  ) : (
+                    <div key={entry.id} className="flex flex-col gap-1.5">
+                      <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+                        <LogoMark size={16} className="rounded" />
+                        EduVoice
+                      </span>
+                      <p className="text-[16px] leading-8 break-words whitespace-pre-wrap text-zinc-800 sm:text-[17px] dark:text-zinc-100">
+                        {entry.text}
+                        {liveId === entry.id && (
+                          <span className="ml-1 inline-block h-[1.05em] w-[2px] translate-y-[0.15em] animate-blink bg-brand-500 motion-reduce:animate-none" />
+                        )}
+                      </p>
+                    </div>
+                  )
                 )}
-              >
-                {muted ? (
-                  <MicOff className="h-5 w-5" />
-                ) : (
-                  <Mic className="h-5 w-5" />
-                )}
-              </button>
-            ))}
 
-          <button
-            type="button"
-            onClick={endSession}
-            title="End voice mode"
-            aria-label="End voice mode"
-            className="flex h-14 w-14 items-center justify-center rounded-full bg-red-500 text-white shadow-lg shadow-red-500/25 transition-colors hover:bg-red-600"
-          >
-            <PhoneOff className="h-5 w-5" />
-          </button>
+                {session.interim && (
+                  <div className="flex flex-col items-end gap-1">
+                    <p className="max-w-[92%] rounded-3xl border border-dashed border-zinc-300 px-4 py-2.5 text-[15px] leading-7 text-zinc-400 dark:border-zinc-700 dark:text-zinc-500">
+                      {session.interim}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </motion.div>
