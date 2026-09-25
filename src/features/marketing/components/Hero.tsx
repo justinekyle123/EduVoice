@@ -1,253 +1,118 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
-import { motion, type Variants } from "motion/react";
-import { Languages, Lightbulb, Mic, Sparkles, Volume2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import gsap from "gsap";
+import { HlsVideo } from "@/features/marketing/components/HlsVideo";
 import { siteConfig } from "@/lib/constants";
-import { LogoMark } from "@/components/layout/Logo";
 
-const container: Variants = {
-  hidden: {},
-  show: {
-    transition: { staggerChildren: 0.12, delayChildren: 0.1 },
-  },
-};
-
-const item: Variants = {
-  hidden: { opacity: 0, y: 24 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.6, ease: "easeOut" } },
-};
-
-const bars = [0, 1, 2, 3, 4];
-
-function useTypewriter(
-  text: string,
-  {
-    typeMs = 35,
-    deleteMs = 14,
-    holdMs = 10000,
-    restMs = 2000,
-  }: { typeMs?: number; deleteMs?: number; holdMs?: number; restMs?: number } = {}
-) {
-  const [count, setCount] = useState(0);
-  const [deleting, setDeleting] = useState(false);
-
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout>;
-
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      // Skip the animation: show the full text once and stop looping.
-      if (count !== text.length) {
-        timer = setTimeout(() => setCount(text.length), 0);
-      }
-      return () => clearTimeout(timer);
-    }
-
-    if (!deleting && count === text.length) {
-      // Fully typed: hold, then start erasing.
-      timer = setTimeout(() => setDeleting(true), holdMs);
-    } else if (deleting && count === 0) {
-      // Fully erased: rest, then type again.
-      timer = setTimeout(() => setDeleting(false), restMs);
-    } else {
-      timer = setTimeout(
-        () => setCount((c) => c + (deleting ? -1 : 1)),
-        deleting ? deleteMs : typeMs
-      );
-    }
-    return () => clearTimeout(timer);
-  }, [count, deleting, text, typeMs, deleteMs, holdMs, restMs]);
-
-  return text.slice(0, count);
-}
+const ROLES = ["tutor", "study buddy", "quiz maker", "note reader"];
 
 export function Hero() {
-  const displayed = useTypewriter(siteConfig.description);
+  const root = useRef<HTMLElement>(null);
+  const [roleIndex, setRoleIndex] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(
+      () => setRoleIndex((i) => (i + 1) % ROLES.length),
+      2000
+    );
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const ctx = gsap.context(() => {
+      gsap
+        .timeline({ defaults: { ease: "power3.out" } })
+        .from(".hero-name", { opacity: 0, y: 50, duration: 1.2, delay: 0.1 })
+        .from(
+          ".hero-blur",
+          {
+            opacity: 0,
+            y: 20,
+            filter: "blur(10px)",
+            duration: 1,
+            stagger: 0.1,
+          },
+          "<"
+        );
+    }, root);
+    return () => ctx.revert();
+  }, []);
+
   return (
     <section
       id="top"
-      className="relative overflow-hidden bg-gradient-to-b from-brand-50/80 via-white to-white dark:from-brand-950/40 dark:via-zinc-950 dark:to-zinc-950"
+      ref={root}
+      className="relative flex min-h-screen items-center justify-center overflow-hidden bg-bg"
     >
-      {/* soft background blobs */}
+      <HlsVideo />
+      <div aria-hidden className="absolute inset-0 bg-black/20" />
       <div
         aria-hidden
-        className="pointer-events-none absolute -top-32 left-1/2 h-[480px] w-[720px] -translate-x-1/2 rounded-full bg-gradient-to-r from-brand-200/60 via-brand-100/40 to-brand-300/60 blur-3xl dark:from-brand-500/20 dark:via-brand-400/10 dark:to-brand-600/15"
-      />
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_1px_1px,rgba(0,0,0,0.05)_1px,transparent_0)] bg-[size:28px_28px] [mask-image:radial-gradient(ellipse_at_center,black_35%,transparent_75%)] dark:bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.07)_1px,transparent_0)]"
+        className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-bg to-transparent"
       />
 
-      <div className="relative mx-auto max-w-6xl px-4 pb-20 pt-32 text-center sm:px-6 sm:pt-36">
-        <motion.div variants={container} initial="hidden" animate="show">
-          <motion.h1
-            variants={item}
-            className="mx-auto mt-6 max-w-3xl text-4xl font-semibold leading-[1.1] tracking-tight text-zinc-900 dark:text-zinc-100 sm:text-6xl"
-          >
-            Study out loud.{" "}
-            <span aria-label="Learn smarter." className="inline-block">
-              {"Learn smarter.".split("").map((char, index) => (
-                <span
-                  key={index}
-                  aria-hidden
-                  className="animate-wave-gradient inline-block bg-gradient-to-r from-brand-700 via-brand-600 to-brand-800 bg-[length:200%_auto] bg-clip-text text-transparent"
-                  style={{ animationDelay: `${index * 0.08}s` }}
-                >
-                  {char === " " ? "\u00A0" : char}
-                </span>
-              ))}
-            </span>
-          </motion.h1>
+      <div className="relative z-10 mx-auto flex max-w-4xl flex-col items-center px-5 pb-24 pt-32 text-center">
+        <p className="hero-blur mb-8 text-xs uppercase tracking-[0.3em] text-muted">
+          Study out loud
+        </p>
 
-          <motion.p
-            variants={item}
-            aria-label={siteConfig.description}
-            className="relative mx-auto mt-6 max-w-2xl text-lg leading-8 text-zinc-600 dark:text-zinc-400"
-          >
-            {/* invisible copy reserves the paragraph height while typing */}
-            <span className="invisible">{siteConfig.description}</span>
-            <span className="absolute inset-0" aria-hidden>
-              {displayed}
-              <span className="animate-blink font-medium text-brand-600">|</span>
-            </span>
-          </motion.p>
+        <h1 className="hero-name mb-6 font-display text-6xl italic leading-[0.9] tracking-tight text-text-primary md:text-8xl lg:text-9xl">
+          Learn out loud.
+        </h1>
 
-          <motion.div
-            variants={item}
-            className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row"
+        <p className="hero-blur mb-6 text-lg text-text-primary/90 sm:text-xl">
+          Your AI{" "}
+          <span
+            key={roleIndex}
+            className="animate-role-fade-in inline-block font-display italic text-text-primary"
           >
-            <Link
-              href="/sign-up"
-              className="group inline-flex h-12 items-center gap-2 rounded-full bg-gradient-to-br from-brand-400 to-brand-500 px-7 text-sm font-semibold text-brand-950 shadow-lg shadow-brand-500/30 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl hover:brightness-105"
-            >
+            {ROLES[roleIndex]}
+          </span>
+          , always ready.
+        </p>
+
+        <p className="hero-blur mb-12 max-w-md text-sm text-muted md:text-base">
+          {siteConfig.description}
+        </p>
+
+        <div className="hero-blur inline-flex flex-col items-center gap-4 sm:flex-row">
+          <Link
+            href="/sign-up"
+            className="group relative inline-flex rounded-full p-[2px] transition-transform duration-200 hover:scale-105"
+          >
+            <span
+              className="accent-gradient absolute inset-0 rounded-full opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+              aria-hidden
+            />
+            <span className="relative inline-flex items-center gap-2 rounded-full bg-text-primary px-7 py-3.5 text-sm font-medium text-bg transition-colors duration-300 group-hover:bg-bg group-hover:text-text-primary">
               Get started free
-              <span className="transition-transform duration-200 group-hover:translate-x-0.5">
-                →
-              </span>
-            </Link>
-            <a
-              href="#how-it-works"
-              className="inline-flex h-12 items-center rounded-full border border-zinc-200 bg-white px-7 text-sm font-medium text-zinc-700 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-zinc-300 hover:shadow-md dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:border-zinc-600"
-            >
-              See how it works
-            </a>
-          </motion.div>
-
-          <motion.div
-            variants={item}
-            className="mt-8 flex flex-wrap items-center justify-center gap-2 text-xs font-medium text-zinc-500 dark:text-zinc-400"
+            </span>
+          </Link>
+          <a
+            href="#how-it-works"
+            className="group relative inline-flex rounded-full p-[2px] transition-transform duration-200 hover:scale-105"
           >
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1 shadow-sm ring-1 ring-zinc-200 dark:bg-zinc-900 dark:ring-zinc-700">
-              <Mic className="h-3.5 w-3.5 text-brand-600 dark:text-brand-400" /> Voice Q&A
+            <span
+              className="accent-gradient absolute inset-0 rounded-full opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+              aria-hidden
+            />
+            <span className="relative inline-flex items-center rounded-full border-2 border-stroke bg-bg px-7 py-3.5 text-sm text-text-primary transition-colors duration-300 group-hover:border-transparent">
+              See how it works
             </span>
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1 shadow-sm ring-1 ring-zinc-200 dark:bg-zinc-900 dark:ring-zinc-700">
-              <Volume2 className="h-3.5 w-3.5 text-brand-700 dark:text-brand-300" /> Spoken answers
-            </span>
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1 shadow-sm ring-1 ring-zinc-200 dark:bg-zinc-900 dark:ring-zinc-700">
-              <Languages className="h-3.5 w-3.5 text-brand-800 dark:text-brand-200" /> English ·
-              Filipino · Cebuano
-            </span>
-          </motion.div>
-        </motion.div>
+          </a>
+        </div>
+      </div>
 
-        {/* chat mockup */}
-        <motion.div
-          initial={{ opacity: 0, y: 48, scale: 0.97 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          transition={{ duration: 0.8, delay: 0.5, ease: "easeOut" }}
-          className="relative mx-auto mt-16 max-w-xl"
-        >
-          <div className="animate-float rounded-3xl border border-zinc-200/80 bg-white p-5 text-left shadow-2xl shadow-brand-950/10 dark:border-zinc-700/60 dark:bg-zinc-900">
-            {/* window header */}
-            <div className="flex items-center gap-2 border-b border-zinc-100 pb-4 dark:border-zinc-800">
-              <span className="h-2.5 w-2.5 rounded-full bg-red-300" />
-              <span className="h-2.5 w-2.5 rounded-full bg-amber-300" />
-              <span className="h-2.5 w-2.5 rounded-full bg-emerald-300" />
-              <span className="ml-2 text-xs font-medium text-zinc-400 dark:text-zinc-500">
-                EduVoice Assistant
-              </span>
-            </div>
-
-            {/* user message */}
-            <div className="mt-4 flex justify-end">
-              <div className="flex max-w-[80%] items-end gap-2 rounded-2xl rounded-br-md bg-gradient-to-br from-brand-400 to-brand-500 px-4 py-2.5 text-sm font-medium text-brand-950 shadow-md shadow-brand-500/25">
-                <Mic className="h-4 w-4 shrink-0 opacity-80" />
-                <span>Explain photosynthesis, please.</span>
-              </div>
-            </div>
-
-            {/* ai message */}
-            <div className="mt-3 flex items-start gap-3">
-              <LogoMark size={32} className="rounded-lg shadow-sm" />
-              <div className="max-w-[85%] rounded-2xl rounded-tl-md border border-zinc-100 bg-zinc-50 px-4 py-3 text-sm leading-6 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
-                <p>
-                  Sure! Ang <strong>photosynthesis</strong> ay ang proseso
-                  kung saan gumagawa ng pagkain ang mga halaman gamit ang
-                  sikat ng araw. 🌱
-                </p>
-                <div className="mt-3 flex items-center gap-2 text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                  <span className="flex h-4 items-end gap-[3px]">
-                    {bars.map((i) => (
-                      <span
-                        key={i}
-                        className="animate-equalizer w-[3px] origin-bottom rounded-full bg-brand-500 dark:bg-brand-400"
-                        style={{
-                          height: 14,
-                          animationDelay: `${i * 0.14}s`,
-                        }}
-                      />
-                    ))}
-                  </span>
-                  Speaking…
-                </div>
-              </div>
-            </div>
-
-            {/* quiz chip */}
-            <div className="mt-4 inline-flex items-center gap-2 rounded-xl border border-brand-200/70 bg-brand-50 px-3.5 py-2 text-xs font-medium text-brand-800 dark:border-brand-500/30 dark:bg-brand-500/10 dark:text-brand-300">
-              <Sparkles className="h-4 w-4" />
-              Quiz generated · Photosynthesis · 5 items
-            </div>
-          </div>
-
-          {/* floating chips */}
-          <div className="animate-float absolute -left-6 top-16 hidden rounded-2xl border border-zinc-200/80 bg-white px-3.5 py-2.5 text-xs font-medium text-zinc-700 shadow-xl shadow-brand-950/5 dark:border-zinc-700/60 dark:bg-zinc-900 dark:text-zinc-200 sm:block [animation-delay:1.2s]">
-            <span className="flex items-center gap-2">
-              <Lightbulb className="h-4 w-4 text-amber-500" />
-              Hint mode on
-            </span>
-          </div>
-          <div className="animate-float absolute -right-4 bottom-16 hidden rounded-2xl border border-zinc-200/80 bg-white px-3.5 py-2.5 text-xs font-medium text-zinc-700 shadow-xl shadow-brand-950/5 dark:border-zinc-700/60 dark:bg-zinc-900 dark:text-zinc-200 sm:block [animation-delay:2s]">
-            <span className="flex items-center gap-2">
-              <Languages className="h-4 w-4 text-brand-600 dark:text-brand-400" />
-              Cebuano detected
-            </span>
-          </div>
-        </motion.div>
-
-        {/* stats */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.8, delay: 1 }}
-          className="mx-auto mt-16 grid max-w-2xl grid-cols-3 divide-x divide-zinc-200 rounded-2xl border border-zinc-200/70 bg-white/60 py-6 shadow-sm backdrop-blur dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-900/60"
-        >
-          {[
-            ["15", "study features"],
-            ["3", "languages"],
-            ["100%", "hands-free"],
-          ].map(([value, label]) => (
-            <div key={label} className="px-4 text-center">
-              <p className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
-                {value}
-              </p>
-              <p className="mt-1 text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                {label}
-              </p>
-            </div>
-          ))}
-        </motion.div>
+      <div className="absolute bottom-8 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-3">
+        <span className="text-xs uppercase tracking-[0.2em] text-muted">
+          Scroll
+        </span>
+        <span className="relative block h-10 w-px overflow-hidden bg-stroke">
+          <span className="accent-gradient absolute inset-x-0 h-full animate-scroll-down" />
+        </span>
       </div>
     </section>
   );
