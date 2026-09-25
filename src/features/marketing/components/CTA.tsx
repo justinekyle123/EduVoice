@@ -1,61 +1,113 @@
 "use client";
 
 import Link from "next/link";
-import { motion } from "motion/react";
-import { ArrowRight, Sparkles } from "lucide-react";
+import { useEffect, useRef } from "react";
+import { motion, type Variants } from "motion/react";
+import gsap from "gsap";
+import { HlsVideo } from "@/features/marketing/components/HlsVideo";
+
+const ease = [0.25, 0.1, 0.25, 1] as const;
+
+const reveal: Variants = {
+  hidden: { opacity: 0, y: 30 },
+  show: { opacity: 1, y: 0, transition: { duration: 1, ease } },
+};
 
 export function CTA() {
-  return (
-    <section id="cta" className="scroll-mt-20 bg-white px-4 pb-24 dark:bg-zinc-950 sm:px-6">
-      <motion.div
-        initial={{ opacity: 0, y: 32 }}
-        whileInView={{ opacity: 1, y: 0 }}
-        viewport={{ once: true, margin: "-80px" }}
-        transition={{ duration: 0.7, ease: "easeOut" }}
-        className="relative mx-auto max-w-6xl overflow-hidden rounded-3xl bg-gradient-to-br from-brand-950 via-brand-800 to-brand-700 px-6 py-20 text-center shadow-2xl shadow-brand-950/30 sm:px-16"
-      >
-        {/* decorative blobs */}
-        <div
-          aria-hidden
-          className="animate-float pointer-events-none absolute -left-16 -top-16 h-64 w-64 rounded-full bg-white/10 blur-3xl"
-        />
-        <div
-          aria-hidden
-          className="animate-float pointer-events-none absolute -bottom-24 -right-16 h-72 w-72 rounded-full bg-brand-400/25 blur-3xl [animation-delay:1.5s]"
-        />
+  const marqueeRef = useRef<HTMLDivElement>(null);
 
-        <div className="relative">
-          <span className="inline-flex items-center gap-2 rounded-full bg-white/15 px-4 py-1.5 text-xs font-medium text-white backdrop-blur">
-            <Sparkles className="h-3.5 w-3.5" />
-            Free for students
-          </span>
-          <h2 className="mx-auto mt-6 max-w-2xl text-3xl font-semibold leading-tight tracking-tight text-white sm:text-5xl">
-            Ready to study out loud?
-          </h2>
-          <p className="mx-auto mt-5 max-w-xl text-lg leading-8 text-brand-100">
-            Ask questions by voice, get spoken answers, and turn your notes
-            into quizzes — all in the language you feel most comfortable speaking.
+  useEffect(() => {
+    const el = marqueeRef.current;
+    if (!el) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const tween = gsap.to(el, {
+      xPercent: -50,
+      duration: 40,
+      ease: "none",
+      repeat: -1,
+    });
+    return () => {
+      tween.kill();
+    };
+  }, []);
+
+  return (
+    <section
+      id="cta"
+      className="relative scroll-mt-20 overflow-hidden bg-bg pb-8 pt-16 md:pb-12 md:pt-20"
+    >
+      <HlsVideo flip />
+      <div aria-hidden className="absolute inset-0 bg-black/60" />
+
+      <div className="relative">
+        <div className="overflow-hidden border-y border-white/10 py-6">
+          <div
+            ref={marqueeRef}
+            aria-hidden
+            className="flex w-max whitespace-nowrap will-change-transform"
+          >
+            {[0, 1].map((copy) => (
+              <div key={copy} className="flex">
+                {Array.from({ length: 6 }).map((_, index) => (
+                  <span
+                    key={index}
+                    className="px-6 font-display text-3xl italic text-text-primary/80 md:text-5xl"
+                  >
+                    Learn out loud •
+                  </span>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <motion.div
+          variants={reveal}
+          initial="hidden"
+          whileInView="show"
+          viewport={{ once: true, margin: "-100px" }}
+          className="mx-auto max-w-[1200px] px-6 py-16 text-center md:px-10 md:py-20"
+        >
+          <p className="text-xs uppercase tracking-[0.3em] text-muted">
+            Study out loud
           </p>
-          <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
+          <h2 className="mx-auto mt-5 max-w-2xl text-4xl tracking-tight text-text-primary md:text-6xl">
+            Ready to <span className="font-display italic">learn</span> by
+            talking?
+          </h2>
+          <p className="mx-auto mt-5 max-w-xl text-sm text-muted md:text-base">
+            Ask questions by voice, get spoken answers, and turn your notes into
+            quizzes — in English, Filipino, or Cebuano.
+          </p>
+
+          <div className="mt-9 flex flex-col items-center justify-center gap-4 sm:flex-row">
             <Link
               href="/sign-up"
-              className="group inline-flex h-12 items-center gap-2 rounded-full bg-white px-7 text-sm font-semibold text-brand-900 shadow-lg shadow-brand-950/20 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl"
+              className="group relative inline-flex rounded-full p-[2px] transition-transform duration-200 hover:scale-105"
             >
-              Get started free
-              <ArrowRight className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-0.5" />
+              <span
+                className="accent-gradient absolute inset-0 rounded-full opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+                aria-hidden
+              />
+              <span className="relative inline-flex items-center gap-2 rounded-full bg-text-primary px-7 py-3.5 text-sm font-medium text-bg transition-colors duration-300 group-hover:bg-bg group-hover:text-text-primary">
+                Get started free
+              </span>
             </Link>
             <a
-              href="#how-it-works"
-              className="inline-flex h-12 items-center rounded-full border border-white/30 bg-white/10 px-7 text-sm font-medium text-white backdrop-blur transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/20"
+              href="mailto:hello@eduvoice.app"
+              className="group relative inline-flex rounded-full p-[2px] transition-transform duration-200 hover:scale-105"
             >
-              See how it works
+              <span
+                className="accent-gradient absolute inset-0 rounded-full opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+                aria-hidden
+              />
+              <span className="relative inline-flex items-center rounded-full border-2 border-stroke bg-bg px-7 py-3.5 text-sm text-text-primary transition-colors duration-300 group-hover:border-transparent">
+                hello@eduvoice.app
+              </span>
             </a>
           </div>
-          <p className="mt-6 text-xs font-medium uppercase tracking-widest text-brand-300">
-            English · Filipino · Cebuano
-          </p>
-        </div>
-      </motion.div>
+        </motion.div>
+      </div>
     </section>
   );
 }

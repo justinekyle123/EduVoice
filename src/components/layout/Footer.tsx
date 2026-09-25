@@ -1,28 +1,36 @@
 import { navLinks, siteConfig } from "@/lib/constants";
 import { Logo } from "@/components/layout/Logo";
 
+const SOCIALS = [
+  { label: "Twitter", href: "https://twitter.com" },
+  { label: "LinkedIn", href: "https://linkedin.com" },
+  { label: "GitHub", href: "https://github.com" },
+];
+
 export function Footer() {
   return (
-    <footer className="border-t border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-      <div className="mx-auto grid max-w-6xl gap-10 px-4 py-14 sm:px-6 md:grid-cols-3">
+    <footer className="border-t border-stroke bg-bg">
+      <div className="mx-auto grid max-w-[1200px] gap-10 px-6 py-14 md:grid-cols-3 md:px-10 lg:px-16">
         <div>
-          <a href="#top">
+          <a href="#top" className="inline-block">
             <Logo />
           </a>
-          <p className="mt-4 max-w-xs text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+          <p className="mt-4 max-w-xs text-sm leading-6 text-muted">
             {siteConfig.tagline}. Built for students who learn best out loud —
             in English, Filipino, or Cebuano.
           </p>
         </div>
 
         <div>
-          <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Product</h3>
-          <ul className="mt-4 space-y-2.5">
+          <h3 className="text-xs uppercase tracking-[0.3em] text-muted">
+            Product
+          </h3>
+          <ul className="mt-5 space-y-3">
             {navLinks.map((link) => (
               <li key={link.href}>
                 <a
                   href={link.href}
-                  className="text-sm text-zinc-500 transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                  className="text-sm text-muted transition-colors hover:text-text-primary"
                 >
                   {link.label}
                 </a>
@@ -31,7 +39,7 @@ export function Footer() {
             <li>
               <a
                 href="#cta"
-                className="text-sm text-zinc-500 transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                className="text-sm text-muted transition-colors hover:text-text-primary"
               >
                 Get started
               </a>
@@ -40,17 +48,40 @@ export function Footer() {
         </div>
 
         <div>
-          <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Languages</h3>
-          <p className="mt-4 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+          <h3 className="text-xs uppercase tracking-[0.3em] text-muted">
+            Languages
+          </h3>
+          <p className="mt-5 text-sm leading-6 text-muted">
             English · Filipino (Tagalog) · Cebuano (Bisaya)
           </p>
         </div>
       </div>
 
-      <div className="border-t border-zinc-100 dark:border-zinc-800">
-        <div className="mx-auto flex max-w-6xl flex-col gap-2 px-4 py-6 text-sm text-zinc-400 dark:text-zinc-500 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+      <div className="border-t border-stroke">
+        <div className="mx-auto flex max-w-[1200px] flex-col gap-4 px-6 py-6 text-sm text-muted sm:flex-row sm:items-center sm:justify-between md:px-10 lg:px-16">
+          <div className="flex items-center gap-5">
+            {SOCIALS.map((social) => (
+              <a
+                key={social.label}
+                href={social.href}
+                target="_blank"
+                rel="noreferrer"
+                className="transition-colors hover:text-text-primary"
+              >
+                {social.label}
+              </a>
+            ))}
+          </div>
+
+          <span className="inline-flex items-center gap-2">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-green-400" />
+            </span>
+            Available for projects
+          </span>
+
           <p>© 2026 EduVoice. All rights reserved.</p>
-          <p>Made for learners in Polomolok, South Cotabato 🌱</p>
         </div>
       </div>
     </footer>

@@ -27,6 +27,21 @@ const localDevOrigins = [
 ];
 
 const nextConfig: NextConfig = {
+  // Landing page card photography is hot-linked from Unsplash and optimized
+  // by next/image, which requires the host to be allow-listed here.
+  // `search` must match the query string built in src/features/marketing/lib/images.ts
+  // exactly — an empty `search` would reject any query string with a 400.
+  images: {
+    remotePatterns: [
+      {
+        protocol: "https",
+        hostname: "images.unsplash.com",
+        port: "",
+        pathname: "/**",
+        search: "?auto=format&fit=crop&w=1200&q=80",
+      },
+    ],
+  },
   allowedDevOrigins: [...tunnelOrigins, ...localDevOrigins],
   experimental:
     process.env.NODE_ENV === "development"
