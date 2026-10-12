@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { AnimatePresence, motion } from "motion/react";
 import {
@@ -16,6 +16,10 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  useVoiceNavCommands,
+} from "@/features/voice-nav/hooks/useVoiceNavCommands";
+import type { PageCommand } from "@/features/voice-nav/context";
 import { getRoomState } from "@/features/rooms/server/actions";
 import {
   generateQuiz,
@@ -117,8 +121,7 @@ export function QuizUI({ roomId }: { roomId?: string | null }) {
     setPhase("taking");
   }
 
-  async function handleGenerate(event: React.FormEvent) {
-    event.preventDefault();
+  async function startQuiz() {
     if (busy) return;
 
     setBusy("generate");
@@ -131,6 +134,11 @@ export function QuizUI({ roomId }: { roomId?: string | null }) {
     } finally {
       setBusy(null);
     }
+  }
+
+  function handleGenerate(event: React.FormEvent) {
+    event.preventDefault();
+    void startQuiz();
   }
 
   async function handleRetake(quizId: string) {
@@ -173,6 +181,54 @@ export function QuizUI({ roomId }: { roomId?: string | null }) {
   const answeredCount = questions.filter((question) =>
     (answers[question.id] ?? "").trim().length > 0
   ).length;
+
+  // Voice Navigation Mode (feature 6.14): the quiz exposes its own commands so a
+  // student can drive it by voice — "start the quiz", "submit answers", "take
+  // another quiz". The handlers are read through a ref that is refreshed every
+  // render, so the registered commands never capture a stale `topic`/`busy`.
+  const voiceActionsRef = useRef({
+    start: () => {},
+    submit: () => {},
+    leave: () => {},
+  });
+  useEffect(() => {
+    voiceActionsRef.current = {
+      start: () => void startQuiz(),
+      submit: () => void handleSubmit(),
+      leave: () => {
+        setPhase("lobby");
+        setResult(null);
+      },
+    };
+  });
+
+  const voiceCommands = useMemo<PageCommand[]>(
+    () => [
+      {
+        id: "quiz-start",
+        description: "Start a quiz on the topic in the field",
+        phrases: ["start the quiz", "start quiz", "generate a quiz", "take the quiz"],
+        spoken: "Starting the quiz.",
+        run: () => voiceActionsRef.current.start(),
+      },
+      {
+        id: "quiz-submit",
+        description: "Submit your answers",
+        phrases: ["submit answers", "submit the quiz", "finish the quiz"],
+        spoken: "Submitting your answers.",
+        run: () => voiceActionsRef.current.submit(),
+      },
+      {
+        id: "quiz-leave",
+        description: "Leave the quiz and return to the quiz lobby",
+        phrases: ["leave the quiz", "quit the quiz", "take another quiz", "another quiz"],
+        spoken: "Back to the quiz lobby.",
+        run: () => voiceActionsRef.current.leave(),
+      },
+    ],
+    []
+  );
+  useVoiceNavCommands("quiz", voiceCommands);
 
   // -------------------------------------------------------------------------
   // Taking

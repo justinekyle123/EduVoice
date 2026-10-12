@@ -9,11 +9,19 @@
 // The phrases understood here mirror how students actually dictate study tasks
 // in Polomolok: English, Filipino, and Cebuano, in one flat list.
 //
-//   "review chapter 4 tomorrow at 7pm"  → title "Review chapter 4",  tomorrow 19:00
-//   "pass the lab report sa Lunes"      → title "Pass the lab report", next Monday 09:00
-//   "ugma 3pm submit physics quiz"      → title "Submit physics quiz", tomorrow 15:00
-//   "read the module in 3 days"         → title "Read the module", +3 days 09:00
-//   "read the module in 3 days at 8am"  → title "Read the module", +3 days 08:00
+//   "review chapter 4 tomorrow at 7pm"    → title "Review chapter 4", tomorrow 19:00
+//   "pass the lab report sa Lunes"       → title "Pass the lab report", next Monday 09:00
+//   "ugma 3pm submit physics quiz"       → title "Submit physics quiz", tomorrow 15:00
+//   "read the module in 3 days"          → title "Read the module", +3 days 09:00
+//   "read the module in 3 days at 8am"   → title "Read the module", +3 days 08:00
+//   "review chapter 4 tomorrow at seven pm" → title "Review chapter 4", tomorrow 19:00
+//   "quiz sa Lunes alas tres ng hapon"   → title "Quiz", next Monday 15:00
+//   "study at 8 in the evening"          → title "Study", today/tomorrow 20:00
+//
+// Times accept digits or spoken numbers ("seven", "alas tres"), am/pm or the
+// longer day-part phrases students actually say ("in the evening", "ng hapon",
+// "sa buntag"), plus noon/midnight. A bare hour with no day-part ("at 7") is
+// resolved to the nearest upcoming reading instead of silently becoming 9am.
 
 export type TaskSource = "voice" | "text";
 export type TaskLanguage = "en" | "fil" | "ceb";
@@ -411,29 +419,158 @@ function explicitDate(
 // Time rules
 // ---------------------------------------------------------------------------
 
-type ResolvedTime = { hour: number; minute: number; phrase: string };
+type ResolvedTime = {
+  /** 24-hour hour when the day-part is known, else the 12-hour value. */
+  hour: number;
+  minute: number;
+  /** True when the hour could be am or pm and the context has to decide. */
+  ambiguous: boolean;
+  /** The exact text that matched, cut back out of the title. */
+  phrase: string;
+};
+
+// Spoken hour numbers. English and Filipino/Cebuano plus the Spanish-derived
+// forms Filipinos actually say with "alas" (alas tres, alas singko, alas dose).
+const HOUR_WORDS: Record<string, number> = {
+  ...NUMBER_WORDS,
+  eleven: 11,
+  twelve: 12,
+  uno: 1,
+  dos: 2,
+  tres: 3,
+  cuatro: 4,
+  singko: 5,
+  sais: 6,
+  siyete: 7,
+  otso: 8,
+  nuwebe: 9,
+  diyes: 10,
+  onse: 11,
+  dose: 12,
+};
+
+// Phrases that pin a bare hour to the morning or the afternoon/evening. Longest
+// first so "in the morning" wins over "morning".
+const AM_MARKERS = [
+  "in the morning",
+  "ng umaga",
+  "sa umaga",
+  "sa buntag",
+  "am",
+  "morning",
+  "buntag",
+];
+
+const PM_MARKERS = [
+  "in the afternoon",
+  "in the evening",
+  "at night",
+  "ng hapon",
+  "sa hapon",
+  "ng gabi",
+  "sa gabi",
+  "sa gabii",
+  "pm",
+  "afternoon",
+  "evening",
+  "night",
+  "hapon",
+  "gabii",
+  "gabi",
+];
+
+/** Regex alternation for a word list, longest first so phrases win. */
+function alternation(words: readonly string[]): string {
+  return [...words]
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegExp)
+    .join("|");
+}
+
+const HOUR_TOKEN = `(?:\\d{1,2}|${alternation(Object.keys(HOUR_WORDS))})`;
+const MERIDIEM_TOKEN = alternation([...AM_MARKERS, ...PM_MARKERS]);
+
+/** "7 p.m." and "7 P.M" both arrive from speech as "pm". */
+function normalizeTimeText(text: string): string {
+  return text
+    .replace(/\ba\.\s?m\.?\b/gi, "am")
+    .replace(/\bp\.\s?m\.?\b/gi, "pm");
+}
+
+/** Map a matched day-part phrase to am or pm. */
+function meridiemFrom(text: string | undefined): "am" | "pm" | undefined {
+  if (!text) return undefined;
+  const value = text.toLowerCase().trim();
+  if (AM_MARKERS.includes(value)) return "am";
+  if (PM_MARKERS.includes(value)) return "pm";
+  return undefined;
+}
+
+function toHourNumber(token: string): number | null {
+  const trimmed = token.trim().toLowerCase();
+  if (/^\d{1,2}$/.test(trimmed)) return Number(trimmed);
+  return HOUR_WORDS[trimmed] ?? null;
+}
+
+// Context handed to each pattern. `allowWordHourAfterPrep` is true once the
+// sentence already names a day, which is what makes "tomorrow at seven" a time
+// while "look at one example" stays a plain task.
+type TimeContext = { allowWordHourAfterPrep: boolean };
 
 // Each pattern declares its own groups and reads them back through `buildTime`,
 // so a pattern with two groups ("3pm") can't be read as if it had three.
 type TimePattern = {
   pattern: RegExp;
-  parse: (match: RegExpExecArray) => ResolvedTime | null;
+  parse: (match: RegExpExecArray, context: TimeContext) => ResolvedTime | null;
 };
 
 const TIME_PATTERNS: TimePattern[] = [
   {
-    // "at 5", "at 5pm", "at 5:30 pm", "@ 7"
-    pattern: /\b(?:at|@)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/,
-    parse: (match) => buildTime(match[1], match[2], match[3], match[0]),
+    // "at 5", "at 5:30 pm", "@ 7", "alas tres ng hapon", "a las 8 sa gabi"
+    // Groups: 1 preposition, 2 hour, 3 minutes, 4 day-part.
+    pattern: new RegExp(
+      `(?:^|\\s)(at|@|a las|alas|sa alas)\\s*(${HOUR_TOKEN})(?::(\\d{2}))?\\s*(?:o'?clock)?\\s*(${MERIDIEM_TOKEN})?\\b`
+    ),
+    parse: (match, context) => {
+      const prep = match[1].toLowerCase();
+      // "alas" always introduces a time, so a spoken hour is trusted there. After
+      // "at", it is trusted only when the sentence already named a day, so "look
+      // at one example" can't invent a deadline.
+      const isAtPrep = prep === "at" || prep === "@";
+      const allowWordHour = isAtPrep ? context.allowWordHourAfterPrep : true;
+      return buildTime(match[2], match[3], match[4], match[0], { allowWordHour });
+    },
   },
   {
     // "17:30", "5:00 pm" without a preposition
-    pattern: /\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/,
+    pattern: new RegExp(`\\b(\\d{1,2}):(\\d{2})\\s*(${MERIDIEM_TOKEN})?\\b`),
     parse: (match) => buildTime(match[1], match[2], match[3], match[0]),
   },
   {
-    // "3pm", "8 am" without a preposition
-    pattern: /\b(\d{1,2})\s*(am|pm)\b/,
+    // "noon", "midday", "tanghali", "midnight", "hatinggabi"
+    pattern: /\b(?:noon|midday|tanghali|midnight|hatinggabi)\b/,
+    parse: (match) => ({
+      hour: match[0] === "midnight" || match[0] === "hatinggabi" ? 0 : 12,
+      minute: 0,
+      ambiguous: false,
+      phrase: match[0],
+    }),
+  },
+  {
+    // "7 o'clock", "seven o'clock in the evening"
+    pattern: new RegExp(
+      `\\b(${HOUR_TOKEN})\\s+o'?clock(?:\\s*(${MERIDIEM_TOKEN}))?\\b`
+    ),
+    parse: (match) =>
+      buildTime(match[1], null, match[2], match[0], { allowWordHour: true }),
+  },
+  {
+    // "3pm", "eight am", "8 sa gabi" — no preposition. A spoken hour is only
+    // accepted together with a day-part, so it can't fire on a stray number word,
+    // and the verb "am" ("…3, am I right?") is excluded.
+    pattern: new RegExp(
+      `\\b(${HOUR_TOKEN})\\s*(${MERIDIEM_TOKEN})\\b(?!\\s+i\\b)`
+    ),
     parse: (match) => buildTime(match[1], null, match[2], match[0]),
   },
 ];
@@ -442,43 +579,64 @@ function buildTime(
   hourText: string,
   minuteText: string | null,
   meridiemText: string | undefined,
-  phrase: string
+  phrase: string,
+  options: { allowWordHour?: boolean } = {}
 ): ResolvedTime | null {
-  const hour = Number(hourText);
+  const hour = toHourNumber(hourText);
   const minute = minuteText ? Number(minuteText) : 0;
-  if (!Number.isFinite(hour) || !Number.isFinite(minute) || minute > 59) {
-    return null;
+  if (hour === null || hour < 0 || hour > 23) return null;
+  if (!Number.isFinite(minute) || minute < 0 || minute > 59) return null;
+
+  const meridiem = meridiemFrom(meridiemText);
+  const isWordHour = !/^\d+$/.test(hourText.trim());
+  if (!meridiem && isWordHour && !options.allowWordHour) return null;
+
+  if (meridiem === "am") {
+    if (hour < 1 || hour > 12) return null;
+    return { hour: hour === 12 ? 0 : hour, minute, ambiguous: false, phrase };
+  }
+  if (meridiem === "pm") {
+    if (hour < 1 || hour > 12) return null;
+    return { hour: hour === 12 ? 12 : hour + 12, minute, ambiguous: false, phrase };
   }
 
-  const asTime = to24Hour(hour, meridiemText?.toLowerCase());
-  if (asTime === null) return null;
-
-  return { hour: asTime, minute, phrase };
+  // No day-part: a 24-hour reading ("at 17") is exact, but "at 7" could be 7am
+  // or 7pm — flag it so the caller picks the nearest upcoming reading.
+  if (hour === 0 || hour >= 13) {
+    return { hour, minute, ambiguous: false, phrase };
+  }
+  return { hour, minute, ambiguous: true, phrase };
 }
 
-function matchTime(text: string): ResolvedTime | null {
+function matchTime(text: string, context: TimeContext): ResolvedTime | null {
   for (const { pattern, parse } of TIME_PATTERNS) {
     const match = pattern.exec(text);
     if (!match) continue;
-    const time = parse(match);
+    const time = parse(match, context);
     if (time) return time;
   }
   return null;
 }
 
-function to24Hour(hour: number, meridiem?: string): number | null {
-  if (meridiem === "pm") {
-    return hour >= 1 && hour <= 12 ? (hour === 12 ? 12 : hour + 12) : null;
+/**
+ * Resolve "at 7" to the nearest hour that hasn't happened yet: said at 9am it
+ * is 7pm today, said at 8pm it is 7am tomorrow. Without this every bare hour
+ * fell through to the 9am default.
+ */
+function soonestAmbiguousHour(hour12: number, wall: Date): number {
+  const nowMinutes = wall.getUTCHours() * 60 + wall.getUTCMinutes();
+  const candidates = hour12 === 12 ? [0, 12] : [hour12, hour12 + 12];
+  let best = candidates[0];
+  let bestDelta = Number.POSITIVE_INFINITY;
+  for (const hour of candidates) {
+    let delta = hour * 60 - nowMinutes;
+    if (delta <= 0) delta += 24 * 60;
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      best = hour;
+    }
   }
-  if (meridiem === "am") {
-    return hour >= 1 && hour <= 12 ? (hour === 12 ? 0 : hour) : null;
-  }
-
-  // No meridiem: a 24-hour reading ("at 17") is unambiguous, but "at 3" could
-  // be 3am or 3pm. Leaving it unresolved keeps a wrong hour off the task — the
-  // student sees the day and can correct the time in one tap.
-  if (hour === 0 || hour >= 13) return hour;
-  return null;
+  return best;
 }
 
 // ---------------------------------------------------------------------------
@@ -541,7 +699,7 @@ export function parseTaskInput(
   raw: string,
   options: ParseOptions = {}
 ): ParsedTaskInput {
-  const text = raw.replace(/\s+/g, " ").trim();
+  const text = normalizeTimeText(raw.replace(/\s+/g, " ").trim());
   const now = options.now ?? new Date();
   const tzOffsetMinutes = options.tzOffsetMinutes ?? now.getTimezoneOffset();
   const wall = wallClock(now, tzOffsetMinutes);
@@ -551,6 +709,7 @@ export function parseTaskInput(
 
   let dueDay: Date | null = null;
   let dueHour: number | null = null;
+  let dueMinute = 0;
   let timeOnly = false;
   const removed: string[] = [];
 
@@ -580,19 +739,24 @@ export function parseTaskInput(
     (acc, phrase) => acc.split(phrase).join(" "),
     lower
   );
-  const time = matchTime(remainder);
+  const time = matchTime(remainder, {
+    allowWordHourAfterPrep: dueDay !== null,
+  });
   if (time) {
     // A bare clock time with no date means today — or tomorrow, once today's
     // chance has passed.
     timeOnly = dueDay === null;
     dueDay = dueDay ?? startOfDay(wall);
-    dueHour = time.hour;
+    dueHour = time.ambiguous
+      ? soonestAmbiguousHour(time.hour, wall)
+      : time.hour;
+    dueMinute = time.minute;
     removed.push(time.phrase);
   }
 
   let dueDate: Date | null = null;
   if (dueDay) {
-    const wallDue = withTime(dueDay, dueHour ?? DEFAULT_DUE_HOUR, time?.minute ?? 0);
+    const wallDue = withTime(dueDay, dueHour ?? DEFAULT_DUE_HOUR, dueMinute);
     dueDate = toInstant(wallDue, tzOffsetMinutes);
 
     if (timeOnly && dueDate.getTime() <= now.getTime()) {

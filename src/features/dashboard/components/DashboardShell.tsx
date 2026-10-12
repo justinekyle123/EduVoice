@@ -16,6 +16,7 @@ import {
 import { cn } from "@/lib/utils";
 import { dashboardNav } from "@/lib/constants";
 import { Logo } from "@/components/layout/Logo";
+import { VoiceNavToggle } from "@/features/voice-nav/components/VoiceNavOverlay";
 import {
   deleteChatSession,
   getChatSessions,
@@ -264,7 +265,8 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           <h1 className="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
             {current?.label ?? "Dashboard"}
           </h1>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-1">
+            <VoiceNavToggle />
             <UserButton />
           </div>
         </header>
