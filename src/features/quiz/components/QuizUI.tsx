@@ -8,7 +8,9 @@ import {
   Check,
   CircleSlash,
   ClipboardList,
+  FileText,
   Loader2,
+  Paperclip,
   RotateCcw,
   Sparkles,
   Trophy,
@@ -23,6 +25,7 @@ import type { PageCommand } from "@/features/voice-nav/context";
 import { getRoomState } from "@/features/rooms/server/actions";
 import {
   generateQuiz,
+  generateQuizFromFile,
   getRecentAttempts,
   getRecentQuizzes,
   startQuizAttempt,
@@ -30,6 +33,17 @@ import {
 } from "../server/actions";
 
 type SafeQuestion = Awaited<ReturnType<typeof generateQuiz>>["questions"][number];
+
+/** Which documents the quiz writer can read directly. */
+const QUIZ_FILE_ACCEPT = ".pdf,.txt,.md,.csv";
+
+function canUseFile(file: File) {
+  const type = file.type.toLowerCase();
+  if (type === "application/pdf" || type.startsWith("text/")) return true;
+  return [".pdf", ".txt", ".md", ".csv"].some((ext) =>
+    file.name.toLowerCase().endsWith(ext)
+  );
+}
 type AttemptResult = Awaited<ReturnType<typeof submitQuizAttempt>>;
 type RecentQuiz = Awaited<ReturnType<typeof getRecentQuizzes>>[number];
 type RecentAttempt = Awaited<ReturnType<typeof getRecentAttempts>>[number];
@@ -53,12 +67,22 @@ function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
-export function QuizUI({ roomId }: { roomId?: string | null }) {
+export function QuizUI({
+  roomId,
+  retakeQuizId,
+}: {
+  roomId?: string | null;
+  /** A finished quiz to reopen on arrival (from the history & scores page). */
+  retakeQuizId?: string | null;
+}) {
   const [phase, setPhase] = useState<"lobby" | "taking" | "results">("lobby");
   const [roomName, setRoomName] = useState<string | null>(null);
 
   const [topic, setTopic] = useState("");
   const [count, setCount] = useState(5);
+  // When set, the quiz is written from this uploaded file instead of a topic.
+  const [file, setFile] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [questions, setQuestions] = useState<SafeQuestion[]>([]);
   const [attemptId, setAttemptId] = useState<string | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -66,7 +90,11 @@ export function QuizUI({ roomId }: { roomId?: string | null }) {
 
   const [recentQuizzes, setRecentQuizzes] = useState<RecentQuiz[]>([]);
   const [recentAttempts, setRecentAttempts] = useState<RecentAttempt[]>([]);
-  const [busy, setBusy] = useState<"generate" | "start" | "submit" | null>(null);
+  // Arriving with a retake already queued (history & scores → Repeat), the
+  // lobby opens in its "start" state rather than going idle first.
+  const [busy, setBusy] = useState<"generate" | "start" | "submit" | null>(
+    retakeQuizId ? "start" : null
+  );
   const [error, setError] = useState<string | null>(null);
 
   const refreshHistory = useCallback(async () => {
@@ -110,24 +138,72 @@ export function QuizUI({ roomId }: { roomId?: string | null }) {
     };
   }, []);
 
-  function beginAttempt(
-    next: { questions: SafeQuestion[]; attemptId: string }
-  ) {
-    setQuestions(next.questions);
-    setAttemptId(next.attemptId);
-    setAnswers({});
-    setResult(null);
+  const beginAttempt = useCallback(
+    (next: { questions: SafeQuestion[]; attemptId: string }) => {
+      setQuestions(next.questions);
+      setAttemptId(next.attemptId);
+      setAnswers({});
+      setResult(null);
+      setError(null);
+      setPhase("taking");
+    },
+    []
+  );
+
+  // Opened from the history & scores page's "Repeat" button: jump straight
+  // into a fresh attempt at that finished quiz instead of the lobby.
+  useEffect(() => {
+    if (!retakeQuizId) return;
+    let cancelled = false;
+    startQuizAttempt({ quizId: retakeQuizId, roomId })
+      .then((opened) => {
+        if (!cancelled) beginAttempt(opened);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(errorMessage(err, "Could not open that quiz"));
+      })
+      .finally(() => {
+        if (!cancelled) setBusy(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [retakeQuizId, roomId, beginAttempt]);
+
+  function handleFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const picked = event.target.files?.[0] ?? null;
+    event.target.value = "";
+    if (!picked) return;
+    if (!canUseFile(picked)) {
+      setError("Attach a PDF or a text file (PDF, TXT, MD, CSV).");
+      return;
+    }
     setError(null);
-    setPhase("taking");
+    setFile(picked);
   }
 
   async function startQuiz() {
     if (busy) return;
+    if (!file && topic.trim().length < 3) {
+      setError("Name a topic, or attach a file to base the quiz on.");
+      return;
+    }
 
     setBusy("generate");
     setError(null);
     try {
-      const created = await generateQuiz({ topic, count, roomId });
+      let created;
+      if (file) {
+        const form = new FormData();
+        form.append("file", file);
+        form.append("topic", topic);
+        form.append("count", String(count));
+        if (roomId) form.append("roomId", roomId);
+        created = await generateQuizFromFile(form);
+      } else {
+        created = await generateQuiz({ topic, count, roomId });
+      }
+      setFile(null);
       beginAttempt(created);
     } catch (err) {
       setError(errorMessage(err, "Could not generate a quiz"));
@@ -485,8 +561,10 @@ export function QuizUI({ roomId }: { roomId?: string | null }) {
             Quiz yourself
           </h1>
           <p className="mt-2 max-w-xl text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-            Name a topic and EduVoice writes a quiz on the spot, then grades your
-            answers with an explanation for each one.
+            Name a topic — or attach a PDF or text file — and EduVoice writes a
+            quiz on the spot, then grades your answers with an explanation for
+            each one. With a file attached, every question comes from that
+            document.
           </p>
         </div>
 
@@ -514,10 +592,48 @@ export function QuizUI({ roomId }: { roomId?: string | null }) {
           </h2>
 
           <input
+            ref={fileInputRef}
+            type="file"
+            accept={QUIZ_FILE_ACCEPT}
+            onChange={handleFile}
+            className="hidden"
+          />
+
+          {file ? (
+            <div className="flex items-center gap-2.5 rounded-xl border border-brand-200 bg-brand-50/70 px-3.5 py-2.5 dark:border-brand-500/30 dark:bg-brand-500/10">
+              <FileText className="h-4 w-4 shrink-0 text-brand-700 dark:text-brand-300" />
+              <span className="min-w-0 flex-1 truncate text-sm text-zinc-800 dark:text-zinc-100">
+                {file.name}
+              </span>
+              <button
+                type="button"
+                onClick={() => setFile(null)}
+                aria-label="Remove the attached file"
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-white hover:text-zinc-700 dark:hover:bg-zinc-900 dark:hover:text-zinc-200"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="inline-flex items-center gap-2 rounded-xl border border-dashed border-zinc-300 px-3.5 py-2.5 text-sm font-medium text-zinc-600 transition-colors hover:border-brand-400 hover:text-brand-700 dark:border-zinc-700 dark:text-zinc-300 dark:hover:border-brand-500 dark:hover:text-brand-300"
+            >
+              <Paperclip className="h-4 w-4" />
+              Attach a file to quiz from (PDF, TXT, MD, CSV)
+            </button>
+          )}
+
+          <input
             value={topic}
             onChange={(event) => setTopic(event.target.value)}
             placeholder={
-              roomName ? `e.g. ${roomName} — key concepts` : "e.g. Cell division"
+              file
+                ? "Optional focus — e.g. Chapter 3"
+                : roomName
+                  ? `e.g. ${roomName} — key concepts`
+                  : "e.g. Cell division"
             }
             className={field}
             maxLength={200}
@@ -540,7 +656,9 @@ export function QuizUI({ roomId }: { roomId?: string | null }) {
             </label>
             <button
               type="submit"
-              disabled={busy === "generate" || topic.trim().length < 3}
+              disabled={
+                busy === "generate" || (!file && topic.trim().length < 3)
+              }
               className={primaryButton}
             >
               {busy === "generate" ? (

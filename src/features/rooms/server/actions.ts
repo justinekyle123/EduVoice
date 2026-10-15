@@ -1,17 +1,21 @@
 "use server";
 
-import { and, asc, desc, eq, gt, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { db } from "@/lib/db";
 import {
   quizAttempts,
+  quizzes,
   roomMessages,
+  roomQuizReady,
+  roomQuizSessions,
   studyRoomMembers,
   studyRooms,
   users,
 } from "@/lib/db/schema";
 import { getUserByClerkId, upsertUser } from "@/features/auth/server/users";
 import { membershipFor } from "./membership";
+import { deleteRoomFile, listRoomFiles } from "./files";
 
 // Same pattern as the chat actions: the room tables key rows by the Postgres
 // `users.id` (uuid), but Clerk's `auth()` returns the Clerk user id
@@ -296,6 +300,7 @@ export async function getRoomMessages(roomId: string, since?: string | null) {
       id: roomMessages.id,
       userId: roomMessages.userId,
       content: roomMessages.content,
+      fileId: roomMessages.fileId,
       createdAt: roomMessages.createdAt,
       name: users.name,
       email: users.email,
@@ -330,4 +335,153 @@ export async function sendRoomMessage(input: { roomId: string; content: string }
     .returning();
 
   return message;
+}
+
+// ---------------------------------------------------------------------------
+// Shared files
+// ---------------------------------------------------------------------------
+
+/** Files the host has shared in a room, oldest first. Members only. */
+export async function getRoomFiles(roomId: string) {
+  const { userId: clerkId } = await auth();
+  if (!clerkId) return [];
+  const userId = await requireUserId(clerkId);
+
+  const member = await membershipFor(roomId, userId);
+  if (!member) return [];
+
+  return listRoomFiles(roomId);
+}
+
+/** Host-only: withdraw a shared file from the room (its chat card stays). */
+export async function deleteSharedRoomFile(input: {
+  roomId: string;
+  fileId: string;
+}) {
+  const { userId: clerkId } = await auth();
+  if (!clerkId) throw new Error("Not authenticated");
+  const userId = await requireUserId(clerkId);
+
+  const member = await membershipFor(input.roomId, userId);
+  if (!member || member.role !== "owner") {
+    throw new Error("Only the host can remove a file");
+  }
+
+  await deleteRoomFile(input.roomId, input.fileId);
+}
+
+// ---------------------------------------------------------------------------
+// Membership management
+// ---------------------------------------------------------------------------
+
+/**
+ * Host-only: remove a member from the room. Their ready state for any live
+ * session in this room goes with them, so a waiting room can't stall on someone
+ * who was just removed.
+ */
+export async function removeRoomMember(input: {
+  roomId: string;
+  userId: string;
+}) {
+  const { userId: clerkId } = await auth();
+  if (!clerkId) throw new Error("Not authenticated");
+  const userId = await requireUserId(clerkId);
+
+  const me = await membershipFor(input.roomId, userId);
+  if (!me || me.role !== "owner") {
+    throw new Error("Only the host can remove members");
+  }
+  if (input.userId === userId) throw new Error("You can't remove yourself");
+
+  const [target] = await db
+    .select({ id: studyRoomMembers.id, role: studyRoomMembers.role })
+    .from(studyRoomMembers)
+    .where(
+      and(
+        eq(studyRoomMembers.roomId, input.roomId),
+        eq(studyRoomMembers.userId, input.userId)
+      )
+    );
+
+  if (!target) return;
+  if (target.role === "owner") throw new Error("You can't remove the room owner");
+
+  await db
+    .delete(studyRoomMembers)
+    .where(
+      and(
+        eq(studyRoomMembers.roomId, input.roomId),
+        eq(studyRoomMembers.userId, input.userId)
+      )
+    );
+
+  await db.delete(roomQuizReady).where(
+    and(
+      eq(roomQuizReady.userId, input.userId),
+      inArray(
+        roomQuizReady.sessionId,
+        db
+          .select({ id: roomQuizSessions.id })
+          .from(roomQuizSessions)
+          .where(eq(roomQuizSessions.roomId, input.roomId))
+      )
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// History (the room's scores over time)
+// ---------------------------------------------------------------------------
+
+type RoomAttemptRow = {
+  id: string;
+  userId: string;
+  name: string | null;
+  email: string;
+  /** Which quiz was taken — the history page repeats it from here. */
+  quizId: string;
+  title: string;
+  score: number;
+  totalQuestions: number;
+  completedAt: Date | null;
+};
+
+/**
+ * Every completed quiz attempt that counted for this room — who took what, and
+ * how they scored — newest first. This is the "history" behind the leaderboard.
+ */
+export async function getRoomAttempts(
+  roomId: string,
+  limit = 100
+): Promise<RoomAttemptRow[]> {
+  const { userId: clerkId } = await auth();
+  if (!clerkId) return [];
+  const userId = await requireUserId(clerkId);
+
+  const member = await membershipFor(roomId, userId);
+  if (!member) return [];
+
+  return db
+    .select({
+      id: quizAttempts.id,
+      userId: quizAttempts.userId,
+      name: users.name,
+      email: users.email,
+      quizId: quizAttempts.quizId,
+      title: quizzes.title,
+      score: quizAttempts.score,
+      totalQuestions: quizAttempts.totalQuestions,
+      completedAt: quizAttempts.completedAt,
+    })
+    .from(quizAttempts)
+    .innerJoin(users, eq(users.id, quizAttempts.userId))
+    .innerJoin(quizzes, eq(quizzes.id, quizAttempts.quizId))
+    .where(
+      and(
+        eq(quizAttempts.roomId, roomId),
+        isNotNull(quizAttempts.completedAt)
+      )
+    )
+    .orderBy(desc(quizAttempts.completedAt))
+    .limit(limit);
 }
