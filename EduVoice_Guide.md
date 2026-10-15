@@ -86,7 +86,7 @@ EduVoice will automatically extract key terms and concepts from uploaded documen
 
 ### 6.13  Collaborative Study Rooms
 
-Students will be able to create or join virtual study rooms where multiple students will be able to quiz each other, chat, and compete on shared leaderboards generated from the same uploaded material. Collaborative Study Rooms will encourage peer-to-peer learning and will make quiz review more engaging through friendly competition.
+Students will be able to create or join virtual study rooms where multiple students will be able to quiz each other, chat, and compete on shared leaderboards genercleated from the same uploaded material. Collaborative Study Rooms will encourage peer-to-peer learning and will make quiz review more engaging through friendly competition.
 
 ### 6.14  Accessibility Voice Navigation Mode
 

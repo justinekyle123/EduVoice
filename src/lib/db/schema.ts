@@ -1,4 +1,5 @@
 import { relations } from "drizzle-orm";
+import { customType } from "drizzle-orm/pg-core";
 import {
   boolean,
   date,
@@ -13,6 +14,15 @@ import {
   unique,
   uuid,
 } from "drizzle-orm/pg-core";
+
+// Postgres `bytea`, used to hold an uploaded room file's bytes inline. Drizzle
+// has no built-in bytea helper, and node-postgres hands bytea back as a Buffer,
+// so a tiny custom type is all it takes to read and write one.
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return "bytea";
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -33,6 +43,14 @@ export const documentStatus = pgEnum("document_status", [
 ]);
 export const taskSource = pgEnum("task_source", ["voice", "text"]);
 export const roomRole = pgEnum("room_role", ["owner", "member"]);
+export const roomQuizStatus = pgEnum("room_quiz_status", [
+  // The waiting room: the host has written the quiz but nobody has answered
+  // yet. Members ready up here before the host can open the first question.
+  "lobby",
+  "question",
+  "reveal",
+  "ended",
+]);
 export const studyActivity = pgEnum("study_activity", [
   "chat",
   "quiz",
@@ -159,6 +177,12 @@ export const quizQuestions = pgTable(
     options: jsonb("options").$type<string[]>(),
     correctAnswer: text("correct_answer").notNull(),
     explanation: text("explanation"),
+    /**
+     * Key of the host-dropped narration clip for this question, or null when it
+     * is read by TTS. The bytes live on disk under data/quiz-audio/<roomId>/;
+     * only the key is relational (see features/rooms/server/quizAudio.ts).
+     */
+    audioFile: text("audio_file"),
     order: integer("order").notNull().default(0),
   },
   (table) => [unique("quiz_questions_quiz_order").on(table.quizId, table.order)]
@@ -304,6 +328,35 @@ export const studyRoomMembers = pgTable(
   (table) => [unique("study_room_members_room_user").on(table.roomId, table.userId)]
 );
 
+// ---------------------------------------------------------------------------
+// Shared room files
+//
+// The host shares a study file with the room and everyone can download it. The
+// bytes live in Postgres (`data`) so no external storage service is needed, and
+// downloads go through an authenticated route that checks room membership
+// before writing a single byte — a shared file is never a public URL.
+// ---------------------------------------------------------------------------
+
+export const roomFiles = pgTable(
+  "room_files",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    roomId: uuid("room_id")
+      .notNull()
+      .references(() => studyRooms.id, { onDelete: "cascade" }),
+    /** Who shared it — only the host may upload, per the room's permissions. */
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    fileName: text("file_name").notNull(),
+    fileType: text("file_type").notNull(),
+    fileSize: integer("file_size").notNull(),
+    data: bytea("data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("room_files_room_idx").on(table.roomId, table.createdAt)]
+);
+
 export const roomMessages = pgTable(
   "room_messages",
   {
@@ -315,9 +368,103 @@ export const roomMessages = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     content: text("content").notNull(),
+    // A shared file turns the message into a downloadable attachment. Deleting
+    // the file keeps the chat line (the name is still in `content`).
+    fileId: uuid("file_id").references(() => roomFiles.id, {
+      onDelete: "set null",
+    }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [index("room_messages_room_idx").on(table.roomId, table.createdAt)]
+);
+
+// ---------------------------------------------------------------------------
+// Live room quiz (feature 6.13)
+//
+// One synchronized quiz per room: everyone sees the same question at the same
+// instant, answers it by voice, and watches one shared board between questions.
+// The session row is the shared clock — `questionStartedAt` plus `questionSeconds`
+// decide when the question closes, so every client derives the same phase from
+// the same timestamps instead of running its own timer.
+// ---------------------------------------------------------------------------
+
+export const roomQuizSessions = pgTable(
+  "room_quiz_sessions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    roomId: uuid("room_id")
+      .notNull()
+      .references(() => studyRooms.id, { onDelete: "cascade" }),
+    quizId: uuid("quiz_id")
+      .notNull()
+      .references(() => quizzes.id, { onDelete: "cascade" }),
+    hostId: uuid("host_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    status: roomQuizStatus("status").notNull().default("question"),
+    questionCount: integer("question_count").notNull().default(0),
+    currentIndex: integer("current_index").notNull().default(0),
+    /** Seconds a question stays open before it closes itself. */
+    questionSeconds: integer("question_seconds").notNull().default(30),
+    startedAt: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(),
+    /** When the current question opened — the shared countdown's origin. */
+    questionStartedAt: timestamp("question_started_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    /** When the current question's answers were shown. */
+    revealedAt: timestamp("revealed_at", { withTimezone: true }),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("room_quiz_sessions_room_idx").on(table.roomId, table.createdAt)]
+);
+
+// One member's "I'm ready" for a waiting-room session. Cleared when the session
+// leaves the lobby, so a later round starts from a blank ready list.
+export const roomQuizReady = pgTable(
+  "room_quiz_ready",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => roomQuizSessions.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    readyAt: timestamp("ready_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    unique("room_quiz_ready_session_user").on(table.sessionId, table.userId),
+    index("room_quiz_ready_session_idx").on(table.sessionId),
+  ]
+);
+
+export const roomQuizResponses = pgTable(
+  "room_quiz_responses",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => roomQuizSessions.id, { onDelete: "cascade" }),
+    /** Index of the question within the quiz, matching `quiz_questions.order`. */
+    questionIndex: integer("question_index").notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    answer: text("answer").notNull(),
+    isCorrect: boolean("is_correct").notNull().default(false),
+    /** Milliseconds from the question opening to the answer — the tie-breaker. */
+    responseMs: integer("response_ms"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    unique("room_quiz_responses_session_q_user").on(
+      table.sessionId,
+      table.questionIndex,
+      table.userId
+    ),
+    index("room_quiz_responses_session_idx").on(table.sessionId, table.questionIndex),
+  ]
 );
 
 // ---------------------------------------------------------------------------
@@ -460,7 +607,9 @@ export const studyRoomsRelations = relations(studyRooms, ({ one, many }) => ({
   }),
   members: many(studyRoomMembers),
   messages: many(roomMessages),
+  files: many(roomFiles),
   attempts: many(quizAttempts),
+  liveQuizzes: many(roomQuizSessions),
 }));
 
 export const studyRoomMembersRelations = relations(studyRoomMembers, ({ one }) => ({
@@ -471,6 +620,45 @@ export const studyRoomMembersRelations = relations(studyRoomMembers, ({ one }) =
 export const roomMessagesRelations = relations(roomMessages, ({ one }) => ({
   room: one(studyRooms, { fields: [roomMessages.roomId], references: [studyRooms.id] }),
   user: one(users, { fields: [roomMessages.userId], references: [users.id] }),
+  file: one(roomFiles, { fields: [roomMessages.fileId], references: [roomFiles.id] }),
+}));
+
+export const roomFilesRelations = relations(roomFiles, ({ one }) => ({
+  room: one(studyRooms, { fields: [roomFiles.roomId], references: [studyRooms.id] }),
+  user: one(users, { fields: [roomFiles.userId], references: [users.id] }),
+}));
+
+export const roomQuizReadyRelations = relations(roomQuizReady, ({ one }) => ({
+  session: one(roomQuizSessions, {
+    fields: [roomQuizReady.sessionId],
+    references: [roomQuizSessions.id],
+  }),
+  user: one(users, { fields: [roomQuizReady.userId], references: [users.id] }),
+}));
+
+export const roomQuizSessionsRelations = relations(
+  roomQuizSessions,
+  ({ one, many }) => ({
+    room: one(studyRooms, {
+      fields: [roomQuizSessions.roomId],
+      references: [studyRooms.id],
+    }),
+    quiz: one(quizzes, {
+      fields: [roomQuizSessions.quizId],
+      references: [quizzes.id],
+    }),
+    host: one(users, { fields: [roomQuizSessions.hostId], references: [users.id] }),
+    responses: many(roomQuizResponses),
+    ready: many(roomQuizReady),
+  })
+);
+
+export const roomQuizResponsesRelations = relations(roomQuizResponses, ({ one }) => ({
+  session: one(roomQuizSessions, {
+    fields: [roomQuizResponses.sessionId],
+    references: [roomQuizSessions.id],
+  }),
+  user: one(users, { fields: [roomQuizResponses.userId], references: [users.id] }),
 }));
 
 export const studyPlansRelations = relations(studyPlans, ({ one }) => ({

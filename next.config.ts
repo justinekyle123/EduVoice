@@ -43,14 +43,19 @@ const nextConfig: NextConfig = {
     ],
   },
   allowedDevOrigins: [...tunnelOrigins, ...localDevOrigins],
-  experimental:
-    process.env.NODE_ENV === "development"
-      ? {
-          serverActions: {
-            allowedOrigins: [...tunnelOrigins, ...localDevOrigins],
-          },
-        }
-      : undefined,
+  experimental: {
+    serverActions: {
+      // Quiz generation can accept an uploaded study file, which exceeds the
+      // 1MB default. The cap counts the whole multipart body (boundaries and
+      // headers included), so it sits a little above the file-size limit the
+      // quiz action enforces.
+      bodySizeLimit: "16mb",
+      // Only widen the CSRF origin check in development (Codespaces/Tunnels).
+      ...(process.env.NODE_ENV === "development"
+        ? { allowedOrigins: [...tunnelOrigins, ...localDevOrigins] }
+        : {}),
+    },
+  },
 };
 
 export default nextConfig;

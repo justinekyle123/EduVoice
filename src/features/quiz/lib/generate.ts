@@ -1,4 +1,4 @@
-import { generateText } from "@/lib/ai";
+import { generateParts, generateText } from "@/lib/ai";
 
 // Quiz generation lives on the free tier: one request produces a whole quiz, and
 // it rides the same rotating AI Studio key pool the chat uses (./lib/ai/keys.ts),
@@ -31,6 +31,38 @@ const SYSTEM_INSTRUCTION = `You are EduVoice's quiz writer for students.
 Write clear, unambiguous questions that test understanding rather than trivia.
 Base every question on well-established facts.
 Return JSON only — no commentary, no markdown fences.`;
+
+// The AI can be handed a document directly as inline data, so no local PDF or
+// DOCX text extractor is needed. Inline data is capped well below the room
+// upload limit; anything larger would be rejected by the model API anyway.
+const MAX_INLINE_BYTES = 15 * 1024 * 1024;
+
+/**
+ * The MIME type to send a room file as, or null when the model can't read it.
+ * Only formats Gemini accepts natively are quiz sources: PDF and plain text.
+ * (Browsers often report .md/.csv inconsistently, so the extension is the
+ * fallback.)
+ */
+export function quizSourceMime(
+  fileName: string,
+  mimeType: string
+): string | null {
+  const lower = mimeType.toLowerCase();
+  if (lower === "application/pdf") return "application/pdf";
+  if (fileName.toLowerCase().endsWith(".pdf")) return "application/pdf";
+  if (
+    lower.startsWith("text/") ||
+    [".txt", ".md", ".csv"].some((ext) => fileName.toLowerCase().endsWith(ext))
+  ) {
+    return "text/plain";
+  }
+  return null;
+}
+
+/** True when a shared room file can be turned into a quiz. */
+export function canQuizFromFile(fileName: string, mimeType: string): boolean {
+  return quizSourceMime(fileName, mimeType) !== null;
+}
 
 function buildPrompt(topic: string, count: number) {
   return `Write ${count} quiz questions about "${topic}".
@@ -151,6 +183,82 @@ export function parseQuizReply(text: string): {
 /** Derive a quiz title from the topic when the model didn't supply one. */
 export function titleFromTopic(topic: string) {
   return topic.length > 60 ? `${topic.slice(0, 60).trimEnd()}…` : topic;
+}
+
+function buildFilePrompt(fileName: string, topic: string, count: number) {
+  const focus = topic.trim()
+    ? `Focus on the topic "${topic}".`
+    : "Cover the document's most important ideas.";
+  return `The attached file is "${fileName}". Read it, then write ${count} quiz questions about its contents. ${focus}
+
+Return JSON in exactly this shape:
+{
+  "title": "short quiz title",
+  "questions": [
+    {
+      "question": "the question text",
+      "type": "multiple_choice",
+      "options": ["A", "B", "C", "D"],
+      "correctAnswer": "A",
+      "explanation": "one sentence on why that answer is right"
+    }
+  ]
+}
+
+Rules:
+- Every question must be answerable from the document itself
+- "type" is one of: multiple_choice, true_false, short_answer
+- use mostly multiple_choice, at most two true_false, at most one short_answer
+- multiple_choice: exactly 4 options, and "correctAnswer" must match one option verbatim
+- true_false: "options" is ["True", "False"] and "correctAnswer" is "True" or "False"
+- short_answer: "options" is [] and "correctAnswer" is a short phrase of at most 6 words
+- "explanation" is one sentence, at most 200 characters
+- vary which option holds the correct answer instead of always using the first`;
+}
+
+/**
+ * Write a quiz grounded in an uploaded file. The bytes go to the model as inline
+ * data, so the content comes from the document itself rather than a topic string.
+ */
+export async function generateQuizQuestionsFromFile(input: {
+  fileName: string;
+  topic: string;
+  count: number;
+  mimeType: string;
+  data: Buffer;
+}): Promise<GeneratedQuiz> {
+  const mimeType = quizSourceMime(input.fileName, input.mimeType);
+  if (!mimeType) {
+    throw new Error("Quizzing from a file works with PDF and text files");
+  }
+  if (input.data.length > MAX_INLINE_BYTES) {
+    throw new Error("That file is too large to read — try a smaller one");
+  }
+
+  const { text, provider } = await generateParts({
+    parts: [
+      { text: buildFilePrompt(input.fileName, input.topic, input.count) },
+      {
+        inlineData: {
+          mimeType,
+          data: input.data.toString("base64"),
+        },
+      },
+    ],
+    systemInstruction: SYSTEM_INSTRUCTION,
+    json: true,
+  });
+
+  const { title, questions } = parseQuizReply(text);
+  if (questions.length === 0) {
+    throw new Error("The quiz writer did not return any usable questions");
+  }
+
+  return {
+    title: title ?? titleFromTopic(input.fileName),
+    questions,
+    provider,
+  };
 }
 
 export async function generateQuizQuestions(input: {

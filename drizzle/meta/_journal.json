@@ -29,6 +29,27 @@
       "when": 1789402275561,
       "tag": "0003_black_captain_cross",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791816214146,
+      "tag": "0004_amusing_white_queen",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792036836287,
+      "tag": "0005_careless_trauma",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792043039186,
+      "tag": "0006_tranquil_salo",
+      "breakpoints": true
     }
   ]
 }

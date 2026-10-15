@@ -1,4 +1,4 @@
-import type { Content } from "@google/genai";
+import type { Content, Part } from "@google/genai";
 import { EDUVOICE_SYSTEM_INSTRUCTION } from "@/lib/ai/persona";
 import {
   classifyFailure,
@@ -63,12 +63,37 @@ export type GenerateTextOutput = {
 };
 
 /** Generate a single AI response, optionally continuing a conversation. */
-export async function generateText({
-  prompt,
+export async function generateText(
+  input: GenerateTextInput
+): Promise<GenerateTextOutput> {
+  return generateParts({
+    parts: [{ text: input.prompt }],
+    systemInstruction: input.systemInstruction,
+    history: input.history,
+    json: input.json,
+  });
+}
+
+export type GeneratePartsInput = {
+  /** The user turn, already split into text and (optionally) inline data. */
+  parts: Part[];
+  systemInstruction?: string;
+  history?: Content[];
+  json?: boolean;
+};
+
+/**
+ * Like `generateText`, but lets the caller attach inline data (a PDF or an
+ * image) alongside the prompt. The room's "quiz from an uploaded file" feature
+ * uses this to hand the whole document to Gemini instead of needing a local
+ * text extractor. Rotation, retries and quota handling are identical.
+ */
+export async function generateParts({
+  parts,
   systemInstruction = EDUVOICE_SYSTEM_INSTRUCTION,
   history = [],
   json = false,
-}: GenerateTextInput): Promise<GenerateTextOutput> {
+}: GeneratePartsInput): Promise<GenerateTextOutput> {
   const models = modelChain();
   let lastError: unknown = null;
 
@@ -79,7 +104,7 @@ export async function generateText({
       const { value: response, key } = await withGeminiKey((client) =>
         client.models.generateContent({
           model,
-          contents: [...history, { role: "user", parts: [{ text: prompt }] }],
+          contents: [...history, { role: "user", parts }],
           config: {
             systemInstruction,
             ...(json ? { responseMimeType: "application/json" } : {}),

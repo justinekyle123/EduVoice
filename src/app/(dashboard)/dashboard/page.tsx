@@ -6,7 +6,6 @@ import {
   ArrowRight,
   CheckCircle2,
   ClipboardList,
-  FileText,
   ListTodo,
   MessageSquare,
   Sparkles,
@@ -51,13 +50,6 @@ export default async function OverviewPage() {
       accent: "from-brand-300 to-brand-500",
     },
     {
-      href: "/dashboard/documents",
-      label: "Upload a document",
-      description: "PDFs, Word files, lecture notes",
-      icon: FileText,
-      accent: "from-brand-400 to-brand-600",
-    },
-    {
       href: "/dashboard/quiz",
       label: "Generate a quiz",
       description: "Instant questions from your notes",
@@ -87,11 +79,6 @@ export default async function OverviewPage() {
       label: "Start your first chat",
       done: false,
       href: "/dashboard/chat",
-    },
-    {
-      label: "Upload a study document",
-      done: false,
-      href: "/dashboard/documents",
     },
     {
       label: "Take your first quiz",

@@ -5,8 +5,9 @@
 // AI Studio accounts — one free-tier quota each — and retries on the next key
 // when one is out of quota. That logic lives in ./keys.ts.
 
-import type { Content } from "@google/genai";
+import type { Content, Part } from "@google/genai";
 import {
+  generateParts as geminiGenerateParts,
   generateText as geminiGenerateText,
   generateTextStream as geminiGenerateTextStream,
 } from "./gemini";
@@ -31,6 +32,25 @@ export async function generateText(
   input: GenerateTextInput
 ): Promise<GenerateTextResult> {
   const { text, slot } = await geminiGenerateText(input);
+  return { text, provider: `gemini-${slot}` };
+}
+
+export type GeneratePartsInput = {
+  /** The user turn, split into text and optional inline data (e.g. a PDF). */
+  parts: Part[];
+  systemInstruction?: string;
+  history?: Content[];
+  json?: boolean;
+};
+
+/**
+ * `generateText` with inline data attached — used to quiz a student on an
+ * uploaded file without any local text extraction.
+ */
+export async function generateParts(
+  input: GeneratePartsInput
+): Promise<GenerateTextResult> {
+  const { text, slot } = await geminiGenerateParts(input);
   return { text, provider: `gemini-${slot}` };
 }
 

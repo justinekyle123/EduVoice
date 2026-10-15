@@ -13,7 +13,9 @@ import {
 import { getUserByClerkId, upsertUser } from "@/features/auth/server/users";
 import { membershipFor } from "@/features/rooms/server/membership";
 import {
+  canQuizFromFile,
   generateQuizQuestions,
+  generateQuizQuestionsFromFile,
   isAnswerCorrect,
   type QuestionType,
 } from "../lib/generate";
@@ -44,6 +46,13 @@ export type SafeQuestion = {
 const MIN_QUESTIONS = 3;
 const MAX_QUESTIONS = 15;
 const DEFAULT_QUESTIONS = 5;
+
+/**
+ * Largest file we will send to the model. Sits under the 16MB server-action
+ * body limit (which also counts multipart overhead) and the inline-data cap in
+ * `../lib/generate`.
+ */
+const MAX_QUIZ_FILE_BYTES = 12 * 1024 * 1024; // 12 MB
 
 async function questionsFor(quizId: string): Promise<SafeQuestion[]> {
   const rows = await db
@@ -97,30 +106,37 @@ async function openAttempt(quizId: string, userId: string, roomId?: string | nul
 // Generate
 // ---------------------------------------------------------------------------
 
-/**
- * Write a quiz with the AI and immediately open an attempt at it, so a student
- * goes from typing a topic to answering questions in one round trip.
- */
-export async function generateQuiz(input: {
-  topic: string;
-  count?: number;
-  roomId?: string | null;
-}) {
-  const { userId: clerkId } = await auth();
-  if (!clerkId) throw new Error("Not authenticated");
-  const userId = await requireUserId(clerkId);
+/** One document handed to the quiz writer instead of a topic. */
+type QuizFile = {
+  fileName: string;
+  mimeType: string;
+  data: Buffer;
+} | null;
 
+/**
+ * The shared body of both generators: resolve the room (if any), write the quiz
+ * — from a topic or an uploaded file — store it, and open the attempt. Callers
+ * have already authenticated and decided which source they have.
+ */
+async function createQuiz(input: {
+  userId: string;
+  topic: string;
+  count: number;
+  roomId?: string | null;
+  file: QuizFile;
+}) {
   const topic = input.topic.trim();
-  if (topic.length < 3) throw new Error("Give the quiz a longer topic");
+  // A file already names the subject, so a topic is only required without one.
+  if (!input.file && topic.length < 3) throw new Error("Give the quiz a longer topic");
   if (topic.length > 200) throw new Error("That topic is too long");
 
-  const requested = input.count ?? DEFAULT_QUESTIONS;
+  const requested = input.count;
   const count = Math.min(Math.max(Math.round(requested), MIN_QUESTIONS), MAX_QUESTIONS);
 
   // Validate room membership before spending an AI request on the quiz.
   let room: { id: string; name: string; documentId: string | null } | null = null;
   if (input.roomId) {
-    const member = await membershipFor(input.roomId, userId);
+    const member = await membershipFor(input.roomId, input.userId);
     if (!member) throw new Error("You are not a member of that study room");
     const [roomRow] = await db
       .select({
@@ -136,14 +152,22 @@ export async function generateQuiz(input: {
 
   // A room's shared material is the source of truth for its quizzes; without a
   // document attached the topic carries the context instead.
-  const generated = await generateQuizQuestions({ topic, count });
+  const generated = input.file
+    ? await generateQuizQuestionsFromFile({
+        fileName: input.file.fileName,
+        topic,
+        count,
+        mimeType: input.file.mimeType,
+        data: input.file.data,
+      })
+    : await generateQuizQuestions({ topic, count });
 
   const [quiz] = await db
     .insert(quizzes)
     .values({
-      userId,
+      userId: input.userId,
       title: generated.title,
-      topic,
+      topic: input.file ? input.file.fileName : topic,
       documentId: room?.documentId ?? null,
     })
     .returning();
@@ -169,7 +193,7 @@ export async function generateQuiz(input: {
       order: quizQuestions.order,
     });
 
-  const attempt = await openAttempt(quiz.id, userId, room?.id ?? null);
+  const attempt = await openAttempt(quiz.id, input.userId, room?.id ?? null);
 
   return {
     quiz,
@@ -178,6 +202,71 @@ export async function generateQuiz(input: {
     provider: generated.provider,
     roomName: room?.name ?? null,
   };
+}
+
+/**
+ * Write a quiz from a topic and immediately open an attempt at it.
+ */
+export async function generateQuiz(input: {
+  topic: string;
+  count?: number;
+  roomId?: string | null;
+}) {
+  const { userId: clerkId } = await auth();
+  if (!clerkId) throw new Error("Not authenticated");
+  const userId = await requireUserId(clerkId);
+
+  return createQuiz({
+    userId,
+    topic: input.topic,
+    count: input.count ?? DEFAULT_QUESTIONS,
+    roomId: input.roomId,
+    file: null,
+  });
+}
+
+/**
+ * Write a quiz grounded in an uploaded file. The file arrives in a FormData body
+ * (so the browser streams it rather than base64-ing it into the call) and is
+ * read by the model directly — this is what makes the questions based on the
+ * student's own material rather than on a topic string.
+ */
+export async function generateQuizFromFile(formData: FormData) {
+  const { userId: clerkId } = await auth();
+  if (!clerkId) throw new Error("Not authenticated");
+  const userId = await requireUserId(clerkId);
+
+  const file = formData.get("file");
+  if (!(file instanceof File)) throw new Error("Choose a file to generate from");
+  if (file.size === 0) throw new Error("That file is empty");
+  if (file.size > MAX_QUIZ_FILE_BYTES) {
+    throw new Error(
+      `Files must be ${Math.round(MAX_QUIZ_FILE_BYTES / (1024 * 1024))} MB or smaller`
+    );
+  }
+  if (!canQuizFromFile(file.name, file.type)) {
+    throw new Error("Quizzing from a file works with PDF and text files");
+  }
+
+  const topicValue = formData.get("topic");
+  const countValue = formData.get("count");
+  const roomValue = formData.get("roomId");
+
+  const data = Buffer.from(await file.arrayBuffer());
+
+  return createQuiz({
+    userId,
+    topic: typeof topicValue === "string" ? topicValue : "",
+    count:
+      typeof countValue === "string" ? Number(countValue) : DEFAULT_QUESTIONS,
+    roomId:
+      typeof roomValue === "string" && roomValue.length > 0 ? roomValue : null,
+    file: {
+      fileName: file.name.slice(0, 200),
+      mimeType: file.type || "application/octet-stream",
+      data,
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------

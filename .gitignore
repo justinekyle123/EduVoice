@@ -17,6 +17,9 @@
 /.next/
 /out/
 
+# question audio dropped onto a room quiz (data/quiz-audio/<roomId>/)
+/data/
+
 # production
 /build
 

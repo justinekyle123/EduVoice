@@ -29,6 +29,64 @@ The product combines:
 - Collaborative study rooms
 - Progress-driven recommendations
 
+## 2.1 Functional Decomposition Flow
+
+The following hierarchy decomposes EduVoice into independent functional areas. The lowest-level nodes are the features defined in Section 7.
+
+```mermaid
+flowchart TD
+    EV[EduVoice Learning Assistant]
+
+    EV --> AI[AI Tutoring and Voice Interaction]
+    EV --> SM[Study Materials and Assessment]
+    EV --> PM[Personal Study Management]
+    EV --> CL[Collaborative Learning]
+    EV --> AX[Access and Accessibility]
+
+    AI --> AI1[Text-to-speech AI responses]
+    AI --> AI2[Voice-based question and answer]
+    AI --> AI3[Hint mode]
+    AI --> AI4[Debate mode]
+    AI --> AI5[Interview mode]
+    AI --> AI6[Language detection]
+    AI --> AI7[Tone and mood detection]
+
+    SM --> SM1[Document upload and processing]
+    SM --> SM2[Document-based question and answer]
+    SM --> SM3[Document summaries]
+    SM --> SM4[Quiz generation]
+    SM --> SM5[Quiz taking and scoring]
+    SM --> SM6[Smart flashcards]
+    SM --> SM7[Spaced-repetition reviews]
+
+    PM --> PM1[Hands-free task capture]
+    PM --> PM2[Task list and reminders]
+    PM --> PM3[Progress visualization]
+    PM --> PM4[Performance trends]
+    PM --> PM5[Adaptive study planner]
+
+    CL --> CL1[Study-room creation]
+    CL --> CL2[Room joining and membership]
+    CL --> CL3[Room messaging]
+    CL --> CL4[Shared quizzes]
+    CL --> CL5[Room leaderboard]
+
+    AX --> AX1[Clerk authentication]
+    AX --> AX2[Voice navigation]
+    AX --> AX3[Spoken command feedback]
+    AX --> AX4[Typed and pointer fallbacks]
+```
+
+### Decomposition summary
+
+| Major function | Independent sub-functions |
+|---|---|
+| AI Tutoring and Voice Interaction | TTS, voice Q&A, Hint, Debate, Interview, language detection, tone detection |
+| Study Materials and Assessment | Upload and processing, document Q&A, summaries, quiz generation, quiz scoring, flashcards, spaced repetition |
+| Personal Study Management | Voice task capture, task list, reminders, progress, trends, adaptive planning |
+| Collaborative Learning | Room creation, membership, messaging, shared quizzes, leaderboard |
+| Access and Accessibility | Authentication, voice navigation, spoken feedback, non-voice fallbacks |
+
 ## 3. Problem Statement
 
 Students often have to switch between separate tools for tutoring, document review, quiz creation, reminders, and progress tracking. Typing every question slows study sessions and limits access for learners with visual strain, reading difficulties, or occupied hands. Students also need immediate practice and feedback without becoming dependent on direct AI answers.

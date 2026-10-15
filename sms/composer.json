@@ -1,0 +1,13 @@
+{
+    "require": {
+        "capcom6/android-sms-gateway": "^2.0",
+        "symfony/http-client": "^5.4",
+        "psr/http-client": "^1.0",
+        "nyholm/psr7": "^1.8"
+    },
+    "config": {
+        "allow-plugins": {
+            "php-http/discovery": true
+        }
+    }
+}
