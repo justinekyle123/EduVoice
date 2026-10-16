@@ -37,6 +37,8 @@ first dashboard visit).
 - `email` text UNIQUE
 - `name` text
 - `avatar_url` text
+- `phone_number` text — E.164 mobile number for task reminder texts, null when
+  the student has not saved one (see `sms/` and `src/features/tasks/lib/phone.ts`)
 - `created_at`, `updated_at`
 
 ### chat_sessions
@@ -128,8 +130,10 @@ Hands-free study to-dos, captured by voice or text (feature 6.9).
 - `due_date` timestamp (null = anytime)
 - `completed` boolean
 - `source` enum: `voice` | `text`
+- `reminded_at` timestamp — when the "your task is due" text went out, null
+  until then; the reminder cron only picks up rows still null
 - `created_at`, `updated_at`
-- Index: (`user_id`, `completed`)
+- Index: (`user_id`, `completed`), (`completed`, `due_date`, `reminded_at`)
 
 ### flashcard_decks
 A set of flashcards, usually extracted from one document (feature 6.12).

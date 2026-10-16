@@ -70,15 +70,18 @@ function errorMessage(error: unknown, fallback: string) {
 export function QuizUI({
   roomId,
   retakeQuizId,
+  initialTopic,
 }: {
   roomId?: string | null;
   /** A finished quiz to reopen on arrival (from the history & scores page). */
   retakeQuizId?: string | null;
+  /** A topic to name up front (the progress page's "practise this" link). */
+  initialTopic?: string | null;
 }) {
   const [phase, setPhase] = useState<"lobby" | "taking" | "results">("lobby");
   const [roomName, setRoomName] = useState<string | null>(null);
 
-  const [topic, setTopic] = useState("");
+  const [topic, setTopic] = useState(initialTopic ?? "");
   const [count, setCount] = useState(5);
   // When set, the quiz is written from this uploaded file instead of a topic.
   const [file, setFile] = useState<File | null>(null);

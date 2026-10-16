@@ -71,6 +71,12 @@ export const users = pgTable("users", {
   email: text("email").notNull().unique(),
   name: text("name"),
   avatarUrl: text("avatar_url"),
+  /**
+   * E.164 mobile number for task reminder texts ("+639171234567"), or null when
+   * the student has not opted in. See features/tasks/lib/phone.ts for the
+   * normaliser and the sms/ folder for the gateway that sends them.
+   */
+  phoneNumber: text("phone_number"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
@@ -239,10 +245,20 @@ export const tasks = pgTable(
     dueDate: timestamp("due_date", { withTimezone: true }),
     completed: boolean("completed").notNull().default(false),
     source: taskSource("source").notNull().default("text"),
+    /**
+     * When the "your task is due" text was handed to the SMS gateway. Null means
+     * the reminder has not been sent yet, so the notifier picks the row up on its
+     * next run; stamping it is what stops the same task being texted twice.
+     */
+    remindedAt: timestamp("reminded_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
-  (table) => [index("tasks_user_completed_idx").on(table.userId, table.completed)]
+  (table) => [
+    index("tasks_user_completed_idx").on(table.userId, table.completed),
+    // The notifier's query: open tasks whose due date has arrived, not yet texted.
+    index("tasks_due_reminder_idx").on(table.completed, table.dueDate, table.remindedAt),
+  ]
 );
 
 // ---------------------------------------------------------------------------
