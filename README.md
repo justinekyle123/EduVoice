@@ -20,6 +20,28 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Voice audio on disk
+
+Speech is not synthesized twice. `POST /api/chat/speech` returns WAV bytes, saves
+them under `data/speech/<key>.wav` the first time a passage is spoken, and serves
+the file from then on; `GET /api/chat/speech/<key>` plays a saved clip.
+
+The lines that never change are pre-rendered into `data/phrases/`, which is
+committed, so they are free on every call and never write a clip into
+`data/speech/`. That is voice mode's opener for each study mode, and the
+confirmations voice navigation speaks back to a command — "Opening the quiz.",
+"Scrolled up.", "Sorry, I did not catch that." All of them are listed in
+`src/features/chat/lib/phrases.ts`; anything carrying a page label, an item
+number or the page's own text is synthesized as usual:
+
+```bash
+npm run phrases:generate          # render any missing lines (uses GEMINI_API_KEY)
+npm run phrases:generate -- --force
+```
+
+`data/phrases/` is the only part of `data/` in git; the rest is local state and
+can be deleted at any time.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

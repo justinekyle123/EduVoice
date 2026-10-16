@@ -43,6 +43,14 @@ const nextConfig: NextConfig = {
     ],
   },
   allowedDevOrigins: [...tunnelOrigins, ...localDevOrigins],
+  // The pre-generated voice-mode phrase bank (data/phrases, see README) is read
+  // from disk at request time and nothing imports it, so a serverless trace
+  // would otherwise leave those files out of the deployment and every mode
+  // opener would be synthesized again.
+  outputFileTracingIncludes: {
+    "/api/chat/speech": ["./data/phrases/**/*"],
+    "/api/chat/speech/*": ["./data/phrases/**/*"],
+  },
   experimental: {
     serverActions: {
       // Quiz generation can accept an uploaded study file, which exceeds the

@@ -7,11 +7,15 @@ import { withGeminiKey } from "@/lib/ai/keys";
 
 // Gemini text-to-speech: build the request, wrap the audio.
 //
-// Auth-free on purpose — the server action in ./tts.ts adds the signed-in check
-// — so this file can be exercised directly (diagnostics, scripts). It uses the
-// same rotating key pool as the chat model (see lib/ai/keys.ts), so spoken
-// replies also spread across the free tiers of every configured AI Studio
-// account.
+// Auth-free on purpose — the route handler in src/app/api/chat/speech adds the
+// signed-in check, and scripts/generate-phrases.ts calls it directly — so this
+// file can be exercised on its own. It uses the same rotating key pool as the
+// chat model (see lib/ai/keys.ts), so spoken replies also spread across the free
+// tiers of every configured AI Studio account.
+//
+// Returns raw WAV bytes rather than a base64 data URI: the caller (route or
+// generation script) hands them straight to the browser or writes them to disk,
+// and base64 would inflate every spoken chunk by a third.
 //
 // Model + voice are overridable via env vars:
 //   GEMINI_TTS_MODEL — default gemini-3.1-flash-tts-preview
@@ -29,16 +33,19 @@ import { withGeminiKey } from "@/lib/ai/keys";
 // it directly.
 
 const ttsModel = process.env.GEMINI_TTS_MODEL ?? "gemini-3.1-flash-tts-preview";
-// Keep responses small (PCM ≈ 48 KB/sec before base64): cap very long replies.
+// One request ceiling. The client groups a whole reply into a single request and
+// sizes its groups to this number (SPEECH_GROUP_CHARS in ../lib/speech.ts), so a
+// request that arrives here is normally the whole answer: nothing gets truncated,
+// and nothing has to be synthesized a second time because it was.
 const MAX_TTS_CHARS = 1200;
 
 /** Wrap raw PCM samples in a RIFF/WAVE header so browsers can play them. */
-function pcmToWavDataUri(
+export function pcmToWav(
   pcm: Buffer,
   sampleRate: number,
   channels: number,
   bitsPerSample = 16
-): string {
+): Buffer {
   const dataSize = pcm.length;
   const buffer = Buffer.alloc(44 + dataSize);
 
@@ -57,7 +64,7 @@ function pcmToWavDataUri(
   buffer.writeUInt32LE(dataSize, 40);
   pcm.copy(buffer, 44);
 
-  return `data:audio/wav;base64,${buffer.toString("base64")}`;
+  return buffer;
 }
 
 export type SynthesizeSpeechInput = {
@@ -66,14 +73,17 @@ export type SynthesizeSpeechInput = {
   voice?: string;
   /** Study-mode speech style key (from `lib/voices`); unknown → "tutor". */
   style?: string;
-  /** Optional shorter limit for voice mode, which reduces time-to-first-audio. */
+  /**
+   * Optional cap on the text spoken by this request. The client already groups
+   * a reply to fit the ceiling, so this is a backstop, not the normal limiter.
+   */
   maxChars?: number;
 };
 
-/** Request speech and wrap it as a playable WAV data URI. */
-export async function synthesizeSpeechAudio(
+/** Request speech and return playable WAV bytes. */
+export async function synthesizeSpeechBytes(
   input: SynthesizeSpeechInput
-): Promise<{ audio: string } | { error: string }> {
+): Promise<{ bytes: Buffer; truncated: boolean } | { error: string }> {
   const text = input.text.trim();
   if (!text) return { error: "Nothing to speak" };
 
@@ -86,8 +96,8 @@ export async function synthesizeSpeechAudio(
     320,
     Math.min(input.maxChars ?? MAX_TTS_CHARS, MAX_TTS_CHARS)
   );
-  const spoken =
-    text.length > maxChars ? `${text.slice(0, maxChars).trimEnd()}…` : text;
+  const truncated = text.length > maxChars;
+  const spoken = truncated ? `${text.slice(0, maxChars).trimEnd()}…` : text;
 
   try {
     const { value: interaction } = await withGeminiKey((client) =>
@@ -109,7 +119,8 @@ export async function synthesizeSpeechAudio(
 
     const pcm = Buffer.from(audio.data, "base64");
     return {
-      audio: pcmToWavDataUri(pcm, audio.sample_rate ?? 24000, audio.channels ?? 1),
+      bytes: pcmToWav(pcm, audio.sample_rate ?? 24000, audio.channels ?? 1),
+      truncated,
     };
   } catch (err) {
     console.error("[tts] Gemini TTS failed:", err);

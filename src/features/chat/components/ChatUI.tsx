@@ -128,7 +128,7 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
   const {
     supported: ttsSupported,
     speakingId,
-    voice: ttsVoiceSource,
+    unavailable: ttsUnavailable,
     speak,
     stop: stopSpeaking,
   } = useSpeechSynthesis();
@@ -372,9 +372,9 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
 
   /**
    * One voice turn over SSE (/api/chat/voice). The reply arrives in fragments so
-   * voice mode can start speaking the first sentence while the rest is still
-   * being written — this is what removes the old multi-second silence before the
-   * tutor said anything.
+   * the transcript fills in as the tutor writes it; voice mode then speaks the
+   * finished answer as a single take, so its voice never changes tone partway
+   * through.
    */
   const voiceTurn = useCallback(
     async (text: string, handlers: VoiceTurnHandlers, signal: AbortSignal) => {
@@ -389,7 +389,12 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            sessionId: sessionId ?? null,
+            // The conversation this turn belongs to: the session named in the
+            // URL, or the one the first voice turn created. Voice mode holds the
+            // URL back until the call ends (see handleVoiceTurn), so without the
+            // session it already opened, every spoken turn would be saved as its
+            // own chat — one history entry per exchange.
+            sessionId: sessionId ?? session?.id ?? null,
             mode,
             content: text,
           }),
@@ -457,7 +462,7 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
         setSending(false);
       }
     },
-    [sessionId, mode]
+    [sessionId, session?.id, mode]
   );
 
   // Claude-style empty state: greeting with the composer floating mid-screen.
@@ -882,12 +887,12 @@ export function ChatUI({ sessionId }: { sessionId?: string }) {
                               )}
                               {isSpeaking ? "Stop" : "Listen"}
                             </button>
-                            {isSpeaking && ttsVoiceSource === "browser" && (
+                            {isSpeaking && ttsUnavailable && (
                               <span
-                                title="Gemini's voice is unavailable (free-tier quota), so your browser's voice is used instead."
+                                title="Gemini's voice is unavailable (free-tier quota), so this reply can't be read aloud."
                                 className="text-[11px] text-amber-600 dark:text-amber-400"
                               >
-                                browser voice
+                                voice unavailable
                               </span>
                             )}
                           </div>

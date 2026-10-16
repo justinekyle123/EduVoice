@@ -100,10 +100,16 @@ function join(...parts: string[]): string {
 
 /**
  * Voice input via the browser Web Speech API (no API key needed).
- * Calls `onTranscript(final, interim)` as results arrive.
+ *
+ * `onTranscript` runs when the browser finalizes an utterance. The optional
+ * `onInterim` runs on every interim result — the words the browser has heard but
+ * has not committed to yet — which is what lets a caller act before the browser
+ * has decided the speaker is finished (voice navigation dispatches a command the
+ * moment it is complete; see features/voice-nav/context.tsx).
  */
 export function useSpeechRecognition(
-  onTranscript: (finalText: string, interimText: string) => void
+  onTranscript: (finalText: string, interimText: string) => void,
+  onInterim?: (interimText: string) => void
 ) {
   const supported = useSupported();
   const [listening, setListening] = useState(false);
@@ -112,6 +118,7 @@ export function useSpeechRecognition(
   const [blocked, setBlocked] = useState(false);
   const recorderRef = useRef<RecognitionRecorder | null>(null);
   const callbackRef = useRef(onTranscript);
+  const interimCallbackRef = useRef(onInterim);
   // Words heard in *earlier* sessions of the same turn, and the live interim of
   // the current session. Together they make up what the student has said so far.
   const committedRef = useRef("");
@@ -121,6 +128,10 @@ export function useSpeechRecognition(
   useEffect(() => {
     callbackRef.current = onTranscript;
   }, [onTranscript]);
+
+  useEffect(() => {
+    interimCallbackRef.current = onInterim;
+  }, [onInterim]);
 
   useEffect(
     () => () => {
@@ -171,11 +182,13 @@ export function useSpeechRecognition(
         setBlocked(false);
         setError(null);
         liveInterimRef.current = interimText;
-        setInterim(
-          keepInterimRef.current
-            ? join(committedRef.current, interimText)
-            : interimText
-        );
+        const shown = keepInterimRef.current
+          ? join(committedRef.current, interimText)
+          : interimText;
+        setInterim(shown);
+        // Only when the browser actually heard new partial words: a result that
+        // is all-final must not look like a fresh partial utterance.
+        if (interimText) interimCallbackRef.current?.(shown);
 
         if (finalText) {
           // A session that restarted mid-question contributes its earlier

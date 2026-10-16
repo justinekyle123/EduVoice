@@ -49,6 +49,44 @@ function formatClock(seconds: number): string {
 }
 
 /**
+ * Per-mode tint.
+ *
+ * It is the same call in every study mode, so the one thing that tells them
+ * apart at a glance is colour: the status chip, the orb and the caret on the
+ * live sentence all take the current mode's accent, while chat stays on the
+ * brand cyan the rest of the app uses. Class names are written out in full
+ * because Tailwind reads them as literal text.
+ */
+type ModeAccent = {
+  chip: string;
+  caret: string;
+  orb: { bright: string; deep: string };
+};
+
+const MODE_ACCENTS: Record<string, ModeAccent> = {
+  chat: {
+    chip: "bg-brand-50 text-brand-800 dark:bg-brand-500/10 dark:text-brand-300",
+    caret: "bg-brand-500",
+    orb: { bright: "0, 230, 251", deep: "8, 145, 178" },
+  },
+  hint: {
+    chip: "bg-amber-50 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300",
+    caret: "bg-amber-500",
+    orb: { bright: "251, 191, 36", deep: "180, 83, 9" },
+  },
+  debate: {
+    chip: "bg-rose-50 text-rose-800 dark:bg-rose-500/10 dark:text-rose-300",
+    caret: "bg-rose-500",
+    orb: { bright: "251, 113, 133", deep: "190, 18, 60" },
+  },
+  interview: {
+    chip: "bg-sky-50 text-sky-800 dark:bg-sky-500/10 dark:text-sky-300",
+    caret: "bg-sky-500",
+    orb: { bright: "56, 189, 248", deep: "3, 105, 161" },
+  },
+};
+
+/**
  * Hands-free voice mode.
  *
  * The conversation is the main surface: everything said is shown in full, at
@@ -56,6 +94,11 @@ function formatClock(seconds: number): string {
  * it is spoken. The orb sits beside it (above it on phones) so the student can
  * always look up and see whether the tutor is listening, thinking or talking.
  * Controls live in the top-left corner: mute, interrupt, hang up.
+ *
+ * Deliberately sparse: a slim header, one status chip and the accent colour of
+ * the current mode, so nothing competes with the words. Anything secondary —
+ * the voice picker hint, the pace badge, the "talk over me" note — is hidden
+ * while the tutor is actually talking.
  */
 export function VoiceMode({
   title,
@@ -84,6 +127,7 @@ export function VoiceMode({
   const followRef = useRef(true);
 
   const style = VOICE_STYLES[voiceStyleForMode(mode)];
+  const accent = MODE_ACCENTS[mode] ?? MODE_ACCENTS.chat;
   const busy = session.phase === "thinking" || session.phase === "speaking";
   const lastEntry = session.log[session.log.length - 1];
   const liveId =
@@ -126,7 +170,8 @@ export function VoiceMode({
 
   // If the mic can't be used, the typed fallback keeps voice mode usable —
   // replies are still spoken aloud. (A missing Gemini voice is not a reason to
-  // type: the reply is still spoken, just in the browser's voice.)
+  // type: the reply is still written on screen, and the banner says why it
+  // went unspoken.)
   const needsTyping = !session.recognitionReady || Boolean(session.notice);
   const banner = session.error ?? session.notice ?? session.voiceNotice;
 
@@ -142,23 +187,23 @@ export function VoiceMode({
       aria-label="Voice mode"
     >
       {/* Controls (top-left) and session meta */}
-      <header className="flex shrink-0 items-center gap-2 px-3 py-3 sm:px-5">
+      <header className="flex shrink-0 items-center gap-2 px-3 py-2 sm:px-5">
         <button
           type="button"
           onClick={session.toggleMute}
           title={session.muted ? "Unmute the mic" : "Mute the mic (space)"}
           aria-label={session.muted ? "Unmute the mic" : "Mute the mic"}
           className={cn(
-            "flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors",
+            "flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors",
             session.muted
               ? "bg-zinc-900 text-white dark:bg-white dark:text-zinc-900"
               : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
           )}
         >
           {session.muted ? (
-            <MicOff className="h-5 w-5" />
+            <MicOff className="h-4 w-4" />
           ) : (
-            <Mic className="h-5 w-5" />
+            <Mic className="h-4 w-4" />
           )}
         </button>
 
@@ -173,9 +218,9 @@ export function VoiceMode({
               onClick={session.interrupt}
               title="Interrupt the answer"
               aria-label="Interrupt the answer"
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-zinc-600 transition-colors hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-zinc-600 transition-colors hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
             >
-              <Square className="h-4 w-4" />
+              <Square className="h-3.5 w-3.5" />
             </motion.button>
           )}
         </AnimatePresence>
@@ -185,9 +230,9 @@ export function VoiceMode({
           onClick={session.end}
           title="End voice mode (esc)"
           aria-label="End voice mode"
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-red-500 text-white shadow-lg shadow-red-500/25 transition-colors hover:bg-red-600"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-500 text-white shadow-lg shadow-red-500/25 transition-colors hover:bg-red-600"
         >
-          <PhoneOff className="h-5 w-5" />
+          <PhoneOff className="h-4 w-4" />
         </button>
 
         <div className="ml-2 min-w-0 flex-1">
@@ -197,15 +242,18 @@ export function VoiceMode({
           >
             {title}
           </p>
-          <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">
-            {modeLabel} mode · {style.label} voice · {formatClock(session.elapsed)}
+          <p className="truncate text-[11px] text-zinc-500 dark:text-zinc-400">
+            {modeLabel} · {style.label} · {formatClock(session.elapsed)}
           </p>
         </div>
 
-        {session.firstWordMs > 0 && (
+        {!busy && session.firstWordMs > 0 && (
           <span
             title="Time from your pause to the first spoken word"
-            className="hidden items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-[11px] font-semibold text-brand-800 sm:inline-flex dark:bg-brand-500/10 dark:text-brand-300"
+            className={cn(
+              "hidden items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold sm:inline-flex",
+              accent.chip
+            )}
           >
             <AudioLines className="h-3 w-3" />
             {(session.firstWordMs / 1000).toFixed(1)}s
@@ -221,6 +269,7 @@ export function VoiceMode({
             phase={session.phase}
             micLevel={session.micLevel}
             playbackAnalyser={session.playbackAnalyser}
+            accent={accent.orb}
             className="h-[120px] w-[120px] shrink-0 sm:h-[150px] sm:w-[150px] lg:h-[260px] lg:w-[260px] xl:h-[300px] xl:w-[300px]"
           />
 
@@ -230,7 +279,7 @@ export function VoiceMode({
                 "rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em]",
                 session.muted
                   ? "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
-                  : "bg-brand-50 text-brand-800 dark:bg-brand-500/10 dark:text-brand-300"
+                  : accent.chip
               )}
             >
               {session.muted
@@ -250,7 +299,7 @@ export function VoiceMode({
 
           <p
             aria-live="polite"
-            className="max-w-xs text-center text-sm leading-6 text-zinc-500 dark:text-zinc-400 lg:max-w-[280px]"
+            className="max-w-xs text-center text-[13px] leading-6 text-zinc-500 dark:text-zinc-400 lg:max-w-[280px]"
           >
             {session.status}
           </p>
@@ -316,10 +365,12 @@ export function VoiceMode({
             </button>
           )}
 
-          <p className="hidden max-w-[280px] text-center text-[11px] leading-5 text-zinc-400 lg:block dark:text-zinc-500">
-            Just talk — pause and I&apos;ll answer. Say anything while I speak to
-            cut in.
-          </p>
+          {!busy && (
+            <p className="hidden max-w-[280px] text-center text-[11px] leading-5 text-zinc-400 lg:block dark:text-zinc-500">
+              Just talk — pause and I&apos;ll answer. Say anything while I speak
+              to cut in.
+            </p>
+          )}
         </div>
 
         {/* Conversation column */}
@@ -360,7 +411,7 @@ export function VoiceMode({
                 </p>
               </div>
             ) : (
-              <div className="mx-auto flex max-w-2xl flex-col gap-6">
+              <div className="mx-auto flex max-w-2xl flex-col gap-5">
                 {session.log.map((entry) =>
                   entry.role === "user" ? (
                     <div key={entry.id} className="flex flex-col items-end gap-1">
@@ -380,7 +431,12 @@ export function VoiceMode({
                       <p className="text-[16px] leading-8 break-words whitespace-pre-wrap text-zinc-800 sm:text-[17px] dark:text-zinc-100">
                         {entry.text}
                         {liveId === entry.id && (
-                          <span className="ml-1 inline-block h-[1.05em] w-[2px] translate-y-[0.15em] animate-blink bg-brand-500 motion-reduce:animate-none" />
+                          <span
+                            className={cn(
+                              "ml-1 inline-block h-[1.05em] w-[2px] translate-y-[0.15em] animate-blink motion-reduce:animate-none",
+                              accent.caret
+                            )}
+                          />
                         )}
                       </p>
                     </div>
