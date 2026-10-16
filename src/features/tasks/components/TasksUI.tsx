@@ -13,6 +13,7 @@ import {
   AlertTriangle,
   CalendarClock,
   Check,
+  CheckCircle2,
   Circle,
   Keyboard,
   ListTodo,
@@ -20,6 +21,8 @@ import {
   Mic,
   Pencil,
   Plus,
+  Send,
+  Smartphone,
   Square,
   Trash2,
   X,
@@ -27,14 +30,20 @@ import {
 import { cn } from "@/lib/utils";
 import { useSpeechRecognition } from "@/features/chat/hooks/useSpeechRecognition";
 import { speechLangFor, type DetectedLanguage } from "@/features/chat/lib/detect";
+import { formatPhMobile } from "../lib/phone";
 import type { TaskSource } from "../lib/parse";
 import {
   clearCompletedTasks,
+  clearReminderPhone,
   createTask,
   deleteTask,
+  getReminderPhone,
   getTasks,
+  saveReminderPhone,
+  sendTestSms,
   setTaskCompleted,
   updateTask,
+  type TestSmsResult,
 } from "../server/actions";
 
 type TaskRow = Awaited<ReturnType<typeof getTasks>>[number];
@@ -354,6 +363,14 @@ export function TasksUI() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [composer, setComposer] = useState("");
+  // The mobile number reminder texts go to, and what is currently in the field.
+  const [phone, setPhone] = useState<string | null>(null);
+  const [phoneDraft, setPhoneDraft] = useState("");
+  const [phoneSaving, setPhoneSaving] = useState(false);
+  // The "Send test text" button: busy while it is in flight, then whatever
+  // happened — success or a specific failure the student can act on.
+  const [testBusy, setTestBusy] = useState(false);
+  const [testResult, setTestResult] = useState<TestSmsResult | null>(null);
   // Spoken words waiting to be filed, plus whether the settle timer is running.
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
@@ -380,6 +397,24 @@ export function TasksUI() {
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // The saved reminder number loads alongside the tasks. Text the student has
+  // already started typing wins, so a slow response can't wipe the field.
+  useEffect(() => {
+    let cancelled = false;
+    getReminderPhone()
+      .then((saved) => {
+        if (cancelled) return;
+        setPhone(saved);
+        setPhoneDraft((current) => (current === "" ? (saved ?? "") : current));
+      })
+      .catch(() => {
+        // A missing number is the same as none saved — nothing to report here.
       });
     return () => {
       cancelled = true;
@@ -547,6 +582,70 @@ export function TasksUI() {
     } catch (err) {
       setError(errorMessage(err, "That task could not be saved"));
       return false;
+    }
+  }
+
+  async function handleSavePhone(event: React.FormEvent) {
+    event.preventDefault();
+    const draft = phoneDraft.trim();
+    if (!draft || phoneSaving) return;
+
+    setPhoneSaving(true);
+    setError(null);
+    try {
+      const saved = await saveReminderPhone({ phoneNumber: draft });
+      setPhone(saved);
+      setPhoneDraft(saved ?? draft);
+      setNotice(
+        saved
+          ? `Reminders will be texted to ${formatPhMobile(saved)}.`
+          : "Reminder texts are off."
+      );
+    } catch (err) {
+      setError(errorMessage(err, "That number could not be saved"));
+    } finally {
+      setPhoneSaving(false);
+    }
+  }
+
+  async function handleRemovePhone() {
+    if (phoneSaving) return;
+    setPhoneSaving(true);
+    setError(null);
+    try {
+      await clearReminderPhone();
+      setPhone(null);
+      setPhoneDraft("");
+      setTestResult(null);
+      setNotice("Reminder texts are off.");
+    } catch (err) {
+      setError(errorMessage(err, "Could not turn the reminders off"));
+    } finally {
+      setPhoneSaving(false);
+    }
+  }
+
+  /**
+   * Send one real text to the saved number so the whole path can be checked.
+   * The action reports failures instead of throwing, so the panel below always
+   * has something specific to say.
+   */
+  async function handleSendTest() {
+    if (testBusy || !phone) return;
+    setTestBusy(true);
+    setTestResult(null);
+    setError(null);
+    try {
+      setTestResult(await sendTestSms());
+    } catch (err) {
+      setTestResult({
+        ok: false,
+        code: null,
+        error: errorMessage(err, "The test text could not be sent"),
+        hint: null,
+      });
+    } finally {
+      setTestBusy(false);
     }
   }
 
@@ -792,6 +891,139 @@ export function TasksUI() {
           days · Oct 5 · 10/5 — plus Filipino and Cebuano (bukas, ngayon, ugma,
           karon, sa Lunes, sa makalawa, sa sunod nga semana).
         </p>
+      </section>
+
+      {/* Reminder texts */}
+      <section className={cn(panel, "p-5")}>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-brand-50 to-brand-100 ring-1 ring-brand-200/70 dark:from-brand-500/10 dark:to-brand-400/10 dark:ring-brand-500/30">
+              <Smartphone className="h-5 w-5 text-brand-600 dark:text-brand-400" />
+            </span>
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                Text me when a task is due
+              </h2>
+              <p className="mt-1 max-w-xl text-xs leading-5 text-zinc-500 dark:text-zinc-400">
+                {phone
+                  ? `Reminders go to ${formatPhMobile(phone)} — one text the moment a task’s day and time arrives.`
+                  : "Save your mobile number and EduVoice texts you the moment a task’s day and time arrives. Your number is only ever used for your own task reminders."}
+              </p>
+            </div>
+          </div>
+
+          <form
+            onSubmit={handleSavePhone}
+            className="flex w-full flex-wrap items-center gap-2 sm:w-auto"
+          >
+            <input
+              type="tel"
+              inputMode="tel"
+              autoComplete="tel"
+              value={phoneDraft}
+              onChange={(event) => setPhoneDraft(event.target.value)}
+              placeholder="0917 123 4567"
+              aria-label="Mobile number for task reminders"
+              maxLength={20}
+              className={cn(field, "w-full sm:w-48")}
+            />
+            <button
+              type="submit"
+              disabled={phoneSaving || phoneDraft.trim().length === 0}
+              className={primaryButton}
+            >
+              {phoneSaving ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Check className="h-4 w-4" />
+              )}
+              {phone ? "Update number" : "Save number"}
+            </button>
+            {phone && (
+              <button
+                type="button"
+                onClick={handleRemovePhone}
+                disabled={phoneSaving}
+                className={ghostButton}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Turn off
+              </button>
+            )}
+          </form>
+        </div>
+
+        {/* Try it. One real text, through the same gateway the reminders use. */}
+        <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-zinc-100 pt-4 dark:border-zinc-800">
+          <button
+            type="button"
+            onClick={handleSendTest}
+            disabled={!phone || testBusy}
+            title={
+              phone
+                ? "Send one test text to your saved number"
+                : "Save a mobile number first"
+            }
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-zinc-300 px-3.5 py-2 text-xs font-semibold text-zinc-700 transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          >
+            {testBusy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Send className="h-3.5 w-3.5" />
+            )}
+            {testBusy ? "Sending…" : "Send test text"}
+          </button>
+          <p className="text-[11px] leading-5 text-zinc-400 dark:text-zinc-500">
+            {phone
+              ? "Sends one text now so you can see it work."
+              : "Saves a number first — the test goes to that number."}
+          </p>
+        </div>
+
+        {testResult && (
+          <div
+            role="status"
+            aria-live="polite"
+            className={cn(
+              "mt-3 rounded-xl px-3.5 py-3 text-xs leading-5 ring-1",
+              testResult.ok
+                ? "bg-emerald-50 text-emerald-800 ring-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-200 dark:ring-emerald-500/30"
+                : "bg-red-50 text-red-700 ring-red-100 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/30"
+            )}
+          >
+            {testResult.ok ? (
+              <>
+                <p className="flex items-start gap-1.5 font-semibold">
+                  <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  Test text to {formatPhMobile(testResult.number)}
+                  {testResult.state ? ` — gateway says “${testResult.state}”` : ""}.
+                </p>
+                {testResult.gatewayId && (
+                  <p className="mt-1 break-all text-[11px] opacity-80">
+                    Gateway id {testResult.gatewayId}
+                    {testResult.segments > 1 ? ` · ${testResult.segments} SMS parts` : ""}
+                  </p>
+                )}
+                {testResult.note && <p className="mt-1">{testResult.note}</p>}
+              </>
+            ) : (
+              <>
+                <p className="flex items-start gap-1.5 font-semibold">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  {testResult.error}
+                </p>
+                {testResult.hint && (
+                  <p className="mt-1 text-[11px] opacity-90">{testResult.hint}</p>
+                )}
+                {testResult.code && (
+                  <p className="mt-1 text-[10px] uppercase tracking-wide opacity-70">
+                    {testResult.code.replaceAll("_", " ")}
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </section>
 
       <AnimatePresence>

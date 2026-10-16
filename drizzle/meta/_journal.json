@@ -50,6 +50,13 @@
       "when": 1792043039186,
       "tag": "0006_tranquil_salo",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792109769285,
+      "tag": "0007_brave_thunderbolt_ross",
+      "breakpoints": true
     }
   ]
 }

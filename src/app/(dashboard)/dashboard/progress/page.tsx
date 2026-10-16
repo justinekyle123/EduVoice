@@ -1,5 +1,12 @@
-import { ComingSoon } from "@/features/dashboard/components/ComingSoon";
+import { auth } from "@clerk/nextjs/server";
+import { redirect } from "next/navigation";
+import { ProgressUI } from "@/features/progress/components/ProgressUI";
 
-export default function ProgressPage() {
-  return <ComingSoon section="progress" />;
+export const dynamic = "force-dynamic";
+
+export default async function ProgressPage() {
+  const { userId } = await auth();
+  if (!userId) redirect("/sign-in");
+
+  return <ProgressUI />;
 }
