@@ -31,6 +31,12 @@ import {
   speechLangFor,
   type DetectedLanguage,
 } from "@/features/chat/lib/detect";
+import {
+  navOpenerFor,
+  voiceNavLine,
+  type PhraseLine,
+  type VoiceNavKey,
+} from "@/features/chat/lib/phrases";
 import { matchPageCommand, parseVoiceCommand } from "./lib/commands";
 import {
   activateTarget,
@@ -59,6 +65,12 @@ export type PageCommand = {
   phrases: string[];
   /** Confirmation read back after the action runs (falls back to description). */
   spoken?: string;
+  /**
+   * Confirmation from the pre-generated bank (lib/phrases.ts) — use this when
+   * the page's reply is always the same words, so it is played instead of
+   * synthesized. It wins over `spoken` when both are set.
+   */
+  spokenKey?: VoiceNavKey;
   run: () => void | Promise<void>;
 };
 
@@ -110,6 +122,29 @@ const SCROLL_STEP = 0.8;
 /** Characters read aloud by "read the page" before it stops. */
 const READ_BUDGET = 700;
 
+/**
+ * Delay before the mic is reopened, in milliseconds.
+ *
+ * Voice navigation closes the recognizer while EduVoice speaks (it must not
+ * hear its own reply) and reopens it the moment the audio finishes, so this is
+ * dead time between two commands. Kept as short as the browser allows: Chrome
+ * throws if a new session starts while the previous one is still shutting down,
+ * which is what leaves a gap at all — voice mode settled on the same 120.
+ */
+const RESTART_DELAY_MS = 120;
+/** Ceiling for the backoff below — long enough to stop a restart loop. */
+const MAX_RESTART_DELAY_MS = 4000;
+
+/**
+ * Languages the browser's recognizer almost never serves, and the closest one
+ * that it does. Getting stuck asking for a language the service rejects is the
+ * difference between voice navigation hearing nothing and hearing everything.
+ */
+const LANG_FALLBACK: Record<string, string> = {
+  "ceb-PH": "fil-PH",
+  "fil-PH": "en-PH",
+};
+
 export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -131,16 +166,36 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
   const {
     speaking,
     speak,
+    speakLine,
     stop: stopSpeaking,
   } = useSpeechSynthesis();
 
   const handleCommandRef = useRef<(text: string) => void>(() => {});
-  const recognition = useSpeechRecognition((finalText) =>
-    handleCommandRef.current(finalText)
+
+  /**
+   * Words this turn has already been acted on from, before the browser had
+   * decided the student was finished (see `handleInterim` below). The finalized
+   * utterance repeats those same words, and running it as well would run the
+   * same command twice.
+   */
+  const actedOnRef = useRef("");
+  const handleInterimRef = useRef<(text: string) => void>(() => {});
+
+  const recognition = useSpeechRecognition(
+    (finalText) => {
+      // The words were already acted on early: drop the repeat.
+      if (actedOnRef.current) {
+        actedOnRef.current = "";
+        return;
+      }
+      handleCommandRef.current(finalText);
+    },
+    (interimText) => handleInterimRef.current(interimText)
   );
   const {
     supported,
     listening,
+    interim,
     blocked,
     start,
     abort,
@@ -151,8 +206,20 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
   // without being re-created on every keystroke of recognition.
   const enabledRef = useRef(enabled);
   const languageRef = useRef(language);
+  /**
+   * Recognition languages the browser has already refused, so the next session
+   * asks for the next one down instead of retrying what cannot work.
+   */
+  const unsupportedLangsRef = useRef(new Set<string>());
+  /** Language the live session was opened with, for the error that follows. */
+  const attemptLangRef = useRef("");
+  /** Delay before reopening the mic, doubled after each recognition failure. */
+  const restartDelayRef = useRef(RESTART_DELAY_MS);
   const pageCommandsRef = useRef(new Map<string, PageCommand[]>());
-  const lastFeedbackRef = useRef("");
+  // The last thing EduVoice said, so "repeat" can say it again. The bank line is
+  // kept next to the text so a fixed line is replayed from its recording instead
+  // of being synthesized a second time.
+  const lastSpokenRef = useRef<{ text: string; line?: PhraseLine } | null>(null);
   const targetsRef = useRef<ClickTarget[]>([]);
   const cursorRef = useRef<number | null>(null);
 
@@ -173,15 +240,60 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
   // Feedback
   // -------------------------------------------------------------------------
 
+  /** Say a fresh sentence — one built from a label or a number — the usual way. */
   const announce = useCallback(
     (message: string) => {
       setFeedback(message);
-      lastFeedbackRef.current = message;
+      lastSpokenRef.current = { text: message };
       speak("voice-nav", message, speechLangFor(languageRef.current), DEFAULT_TTS_VOICE, {
         maxChars: 400,
       });
     },
     [speak]
+  );
+
+  /**
+   * Say a line from the pre-generated bank (lib/phrases.ts).
+   *
+   * Voice navigation confirms nearly every command with words that never
+   * change, and each of those used to be synthesized — and written into
+   * `data/speech/` — the first time a student heard it. Asking for the line by
+   * file key plays the recording `npm run phrases:generate` wrote into
+   * `data/phrases/` instead, so the confirmation costs no TTS request at all.
+   */
+  const speakBankLine = useCallback(
+    (line: PhraseLine) => {
+      setFeedback(line.text);
+      lastSpokenRef.current = { text: line.text, line };
+      speakLine("voice-nav", {
+        key: line.key,
+        text: line.text,
+        lang: speechLangFor(languageRef.current),
+        voice: DEFAULT_TTS_VOICE,
+        style: line.style,
+      });
+    },
+    [speakLine]
+  );
+
+  /** Say one of the fixed voice-navigation lines, by key. */
+  const announceLine = useCallback(
+    (key: VoiceNavKey) => speakBankLine(voiceNavLine(key)),
+    [speakBankLine]
+  );
+
+  /**
+   * Announce the page a navigation command is opening. The confirmation names a
+   * destination from a fixed list, so it comes from the bank; a page that has no
+   * line yet falls back to synthesizing its label.
+   */
+  const announceNav = useCallback(
+    (href: string, label: string) => {
+      const line = navOpenerFor(href);
+      if (line) speakBankLine(line);
+      else announce(`Opening ${label}.`);
+    },
+    [announce, speakBankLine]
   );
 
   // -------------------------------------------------------------------------
@@ -219,7 +331,7 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
     (delta: number) => {
       const list = listTargets();
       if (list.length === 0) {
-        announce("There is nothing to move through on this page.");
+        announceLine("nav-nothing-to-move");
         return;
       }
       const current = cursorRef.current;
@@ -234,7 +346,7 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
       target.element.scrollIntoView({ block: "center", behavior: "smooth" });
       announce(`${target.index}. ${target.label}`);
     },
-    [announce, listTargets]
+    [announce, announceLine, listTargets]
   );
 
   const activateCursor = useCallback(() => {
@@ -243,14 +355,14 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
     const target =
       current !== null ? targetAtIndex(list, current) : list[0] ?? null;
     if (!target) {
-      announce("There is nothing to select on this page.");
+      announceLine("nav-nothing-to-select");
       return;
     }
     cursorRef.current = target.index;
     setCursor(target.index);
     announce(`Opening ${target.label}.`);
     activateTarget(target);
-  }, [announce, listTargets]);
+  }, [announce, announceLine, listTargets]);
 
   const readPage = useCallback(() => {
     const main = document.querySelector("main") ?? document.body;
@@ -260,8 +372,9 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
       .filter(Boolean)
       .join(" ")
       .trim();
-    announce(spoken || "This page has nothing to read yet.");
-  }, [announce]);
+    if (spoken) announce(spoken);
+    else announceLine("nav-nothing-to-read");
+  }, [announce, announceLine]);
 
   // -------------------------------------------------------------------------
   // Steering
@@ -286,11 +399,11 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
     // first spoken confirmation isn't blocked by the browser.
     if (next) getSpeechEngine().unlock();
     if (next) {
-      announce("Voice navigation on. Say help to hear the commands.");
+      announceLine("nav-on");
       refreshTargets();
     }
     setEnabled(next);
-  }, [announce, refreshTargets, setEnabled]);
+  }, [announceLine, refreshTargets, setEnabled]);
 
   const setLanguage = useCallback((lang: DetectedLanguage) => {
     writeLang(lang);
@@ -316,7 +429,10 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
         const pageIndex = matchPageCommand(text, pageList);
         if (pageIndex >= 0) {
           const command = pageList[pageIndex];
-          announce(command.spoken ?? command.description);
+          // A page can name a bank line for its confirmation, so a fixed reply
+          // like "Starting the quiz." is a recording too.
+          if (command.spokenKey) speakBankLine(voiceNavLine(command.spokenKey));
+          else announce(command.spoken ?? command.description);
           await command.run();
           refreshTargets();
           return;
@@ -326,7 +442,7 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
         const parsed = parseVoiceCommand(text);
 
         if (parsed.kind === "navigate") {
-          announce(`Opening ${parsed.label}.`);
+          announceNav(parsed.href, parsed.label);
           router.push(parsed.href);
           return;
         }
@@ -354,50 +470,55 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
 
         if (parsed.kind === "unknown") {
           setNotice(`I did not catch a command in “${text}”.`);
-          announce("Sorry, I did not catch that. Say help for the list of commands.");
+          announceLine("nav-no-catch");
           return;
         }
 
         switch (parsed.id) {
           case "help":
             setPanelOpen(true);
-            announce(
-              "Voice navigation commands. Say a page name such as quiz, chat, " +
-                "tasks or progress. Say click three to open an item, next and " +
-                "select to move and choose, read the page to hear it, or stop to be quiet."
-            );
+            announceLine("nav-help");
             return;
           case "stop":
             stopSpeaking();
             setFeedback("Stopped.");
             return;
-          case "repeat":
-            announce(lastFeedbackRef.current || "There is nothing to repeat yet.");
+          case "repeat": {
+            const last = lastSpokenRef.current;
+            if (!last) {
+              announceLine("nav-nothing-to-repeat");
+              return;
+            }
+            // A line from the bank is replayed from its recording, so repeating a
+            // confirmation does not pay for the same sentence twice.
+            if (last.line) speakBankLine(last.line);
+            else announce(last.text);
             return;
+          }
           case "read-page":
             readPage();
             return;
           case "scroll-up":
             window.scrollBy({ top: -window.innerHeight * SCROLL_STEP, behavior: "smooth" });
-            announce("Scrolled up.");
+            announceLine("nav-scrolled-up");
             return;
           case "scroll-down":
             window.scrollBy({ top: window.innerHeight * SCROLL_STEP, behavior: "smooth" });
-            announce("Scrolled down.");
+            announceLine("nav-scrolled-down");
             return;
           case "scroll-top":
             window.scrollTo({ top: 0, behavior: "smooth" });
-            announce("At the top of the page.");
+            announceLine("nav-top");
             return;
           case "scroll-bottom":
             window.scrollTo({
               top: document.body.scrollHeight,
               behavior: "smooth",
             });
-            announce("At the bottom of the page.");
+            announceLine("nav-bottom");
             return;
           case "back":
-            announce("Going back.");
+            announceLine("nav-back");
             router.back();
             return;
           case "next":
@@ -427,6 +548,9 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
     },
     [
       announce,
+      announceLine,
+      announceNav,
+      speakBankLine,
       listTargets,
       moveCursor,
       activateCursor,
@@ -442,25 +566,137 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
     handleCommandRef.current = (text: string) => void handleCommand(text);
   }, [handleCommand]);
 
+  /**
+   * True when the words heard so far already contain a command this provider can
+   * act on — the page names, the built-in vocabulary, or an action the screen on
+   * display registered. Deliberately strict: anything the parser cannot place is
+   * left to the final result, so nothing new is ever announced as "I did not
+   * catch that" just because the student was still speaking.
+   */
+  const looksLikeCommand = useCallback((text: string): boolean => {
+    const pageList: PageCommand[] = [];
+    for (const list of pageCommandsRef.current.values()) pageList.push(...list);
+    if (matchPageCommand(text, pageList) >= 0) return true;
+    return parseVoiceCommand(text).kind !== "unknown";
+  }, []);
+
+  /**
+   * Act on a command the moment its words are there, instead of waiting for the
+   * browser to decide the student has stopped talking.
+   *
+   * Chrome only hands over an utterance once it has heard a pause in it, and a
+   * pause is the second or so between saying "go to the quiz" and the page
+   * actually moving. The words are already there in the interim transcript, so
+   * when it contains a command nothing has to wait — say it and it happens.
+   *
+   * Nothing else changes: an interim that matches nothing is ignored and the
+   * finalized utterance is handled exactly as before, so a command the browser
+   * only gets right at the end still works.
+   */
+  const handleInterim = useCallback(
+    (interimText: string) => {
+      // One command per turn: until the transcript moves on (see the effect
+      // below) the rest of this utterance must not be taken as another command.
+      if (!enabled || blocked || actedOnRef.current) return;
+
+      const pending = interimText.trim();
+      if (!pending || !looksLikeCommand(pending)) return;
+
+      actedOnRef.current = pending;
+      void handleCommand(pending);
+    },
+    [enabled, blocked, handleCommand, looksLikeCommand]
+  );
+
+  useEffect(() => {
+    handleInterimRef.current = handleInterim;
+  }, [handleInterim]);
+
+  // A turn is used up until the transcript moves on. The browser empties it when
+  // it finalizes the utterance, and a fresh recognition session starts empty
+  // too — either one means the next command may be taken early.
+  const wasListeningRef = useRef(false);
+  useEffect(() => {
+    const newSession = listening && !wasListeningRef.current;
+    wasListeningRef.current = listening;
+    if (newSession || !interim.trim()) actedOnRef.current = "";
+  }, [interim, listening]);
+
   // -------------------------------------------------------------------------
   // Listening loop
   // -------------------------------------------------------------------------
 
-  // Never listen while EduVoice is talking or while navigation is off.
+  // Never listen while EduVoice is talking or while navigation is off. Its own
+  // reply is the one thing the recognizer must not pick up.
   useEffect(() => {
     if (!enabled || speaking) abort();
   }, [enabled, speaking, abort]);
 
-  // Keep one session open (restarting across the browser's own timeouts) for as
-  // long as voice navigation is on.
+  // Keep one session open (restarting across the browser's own silence timeouts,
+  // and after every reply) for as long as voice navigation is on.
+  //
+  // Three things decide how quickly a spoken command is heard:
+  //
+  //   • keepInterim — a browser session ends on its own after a few seconds of
+  //     silence, and voice navigation restarts one constantly. Carrying the
+  //     interim words across that restart is what stops a command that began
+  //     just before it from arriving with its first half missing, which the
+  //     student experiences as having to say it again (voice mode asks for the
+  //     same thing).
+  //   • the language actually asked for — see `unsupportedLangsRef` below.
+  //   • how long the mic stays closed afterwards — `restartDelayRef`.
   useEffect(() => {
     if (!enabled || speaking || blocked || !supported || listening) return;
+
+    let attempt = speechLangFor(language);
+    while (unsupportedLangsRef.current.has(attempt) && LANG_FALLBACK[attempt]) {
+      attempt = LANG_FALLBACK[attempt];
+    }
+    attemptLangRef.current = attempt;
+
     const timer = window.setTimeout(
-      () => start(speechLangFor(language), { continuous: true }),
-      150
+      () => start(attempt, { continuous: true, keepInterim: true }),
+      restartDelayRef.current
     );
     return () => window.clearTimeout(timer);
-  }, [enabled, speaking, blocked, supported, listening, language, start]);
+  }, [
+    enabled,
+    speaking,
+    blocked,
+    supported,
+    listening,
+    language,
+    recognitionError,
+    start,
+  ]);
+
+  // A session is open again, so the mic is hearing something: drop any backoff
+  // left over from an earlier failure.
+  useEffect(() => {
+    if (listening) restartDelayRef.current = RESTART_DELAY_MS;
+  }, [listening]);
+
+  // Repeated recognition failures back off instead of hammering the service (a
+  // silent "no-speech" never gets here — the hook swallows those). A language
+  // the browser does not serve is noted instead, so the next attempt steps down
+  // to one it does rather than asking again forever and hearing nothing.
+  useEffect(() => {
+    if (!recognitionError) return;
+
+    if (
+      recognitionError.code === "language-not-supported" &&
+      attemptLangRef.current
+    ) {
+      unsupportedLangsRef.current.add(attemptLangRef.current);
+      restartDelayRef.current = RESTART_DELAY_MS;
+      return;
+    }
+
+    restartDelayRef.current = Math.min(
+      restartDelayRef.current * 2,
+      MAX_RESTART_DELAY_MS
+    );
+  }, [recognitionError]);
 
   // Refresh the numbered list whenever the page changes underneath us, so the
   // commands always describe what is actually on screen.

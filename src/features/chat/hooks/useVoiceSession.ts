@@ -9,6 +9,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import { detectLanguage, speechLangFor } from "../lib/detect";
+import { openerFor } from "../lib/phrases";
+import { SPEECH_BUDGET } from "../lib/speech";
 import { voiceStyleForMode, type VoiceStyle } from "../lib/voices";
 import { getSpeechEngine, type SpeechStream } from "../lib/speechEngine";
 import { useMicStream } from "./useMicStream";
@@ -25,8 +27,11 @@ import { useSpeechRecognition } from "./useSpeechRecognition";
 //   barge-in     talking over the tutor stops the audio and takes the turn, the
 //                way you interrupt a person mid-sentence. It arms only once
 //                audio is really playing, and it backs off if the room echoes.
-//   streaming    reply text goes into the speech engine as it arrives and is
-//                spoken sentence by sentence.
+//   one take     reply text goes into the speech engine as it arrives and the
+//                answer is spoken as a single recording, so the voice never
+//                changes tone halfway through it.
+//   greeting     the call opens with the mode's fixed line, played from the
+//                pre-generated phrase bank rather than synthesized again.
 //   resilience   the recognizer is restarted across the browser's own session
 //                timeouts without losing words that were only heard as interim.
 
@@ -92,8 +97,23 @@ const BARGE_FRAMES = 4;
 const EARLY_BARGE_MS = 1200;
 /** Grace period before talking over a *still composing* reply cancels it. */
 const THINKING_BARGE_MS = 1800;
-/** Characters spoken per reply; the rest stays on screen. */
-const SPOKEN_BUDGET = 900;
+/**
+ * Characters spoken per reply; the rest stays on screen.
+ *
+ * The same number the one-shot "Listen" path uses, on purpose: a reply must be
+ * cut into the same chunks whether it is streamed live or replayed later, or the
+ * replay would be cut differently and have to be synthesized again.
+ *
+ * Generous because voice mode's instruction asks the tutor for three or four
+ * sentences — the budget exists to stop one pathological answer from eating the
+ * whole TTS quota, not to shorten normal answers. A normal answer is well under
+ * it, so it is still spoken as one take, and only an unusually long one is cut
+ * into a second.
+ */
+const SPOKEN_BUDGET = SPEECH_BUDGET;
+
+/** Log id of the opening line, so it is never mistaken for a saved message. */
+const GREETING_ID = "greeting";
 
 /** Browsers rarely offer Cebuano recognition — step down to what they support. */
 const LANG_FALLBACK: Record<string, string> = {
@@ -109,7 +129,7 @@ function wordCount(text: string): number {
 const IDLE_SPEECH = {
   speakingId: null as string | null,
   status: "idle" as const,
-  voice: "gemini" as const,
+  unavailable: false,
 };
 
 export function useVoiceSession(options: {
@@ -126,18 +146,27 @@ export function useVoiceSession(options: {
   const { lang, ttsVoice, mode, transport, onTurn, onEnd } = options;
   const engine = useMemo(() => getSpeechEngine(), []);
   const style: VoiceStyle = voiceStyleForMode(mode);
+  /** Fixed opening line for this mode (lib/phrases.ts), or null. */
+  const opener = useMemo(() => openerFor(mode), [mode]);
 
-  // Which voice the last reply was actually spoken in — the student is told
-  // when the fallback is in use instead of silently hearing a worse voice.
+  // Whether the last reply could actually be spoken — the student is told when
+  // it could not, instead of being left with unexplained silence.
   const speech = useSyncExternalStore(
     engine.subscribe,
     engine.getSnapshot,
     () => IDLE_SPEECH
   );
 
-  const [phase, setPhase] = useState<VoicePhase>("listening");
+  // A call that opens with a spoken line starts in the speaking phase and shows
+  // that line in the transcript from the first paint, so the greeting never
+  // needs a state update from inside an effect.
+  const [phase, setPhase] = useState<VoicePhase>(
+    opener ? "speaking" : "listening"
+  );
   const [muted, setMuted] = useState(false);
-  const [log, setLog] = useState<VoiceLogEntry[]>([]);
+  const [log, setLog] = useState<VoiceLogEntry[]>(() =>
+    opener ? [{ id: GREETING_ID, role: "assistant", text: opener.text }] : []
+  );
   const [error, setError] = useState<string | null>(null);
   const [turnCount, setTurnCount] = useState(0);
   const [elapsed, setElapsed] = useState(0);
@@ -532,6 +561,42 @@ export function useVoiceSession(options: {
     return () => cancelAnimationFrame(raf);
   }, [engine, micLevel, interrupt]);
 
+  // -------------------------------------------------------------------------
+  // Opening line
+  // -------------------------------------------------------------------------
+
+  /**
+   * Say the mode's opener as the call starts: interview practice begins with an
+   * invitation, a debate with a challenge.
+   *
+   * The line is fixed, so it is played from the pre-generated bank
+   * (lib/phrases.ts → data/phrases) instead of being written and synthesized
+   * again — instant, and no TTS request. It goes through the ordinary phase
+   * machine, so the student can talk over it and cut it off like anything else.
+   */
+  useEffect(() => {
+    if (!opener) return;
+
+    // Started on every pass of this effect rather than once. React Strict Mode
+    // mounts, unmounts and remounts in development, and the unmount cleanup
+    // stops the engine — so a "first time only" guard would let the cleanup
+    // cancel the line the first pass had just started and never restart it,
+    // leaving the student with no greeting at all. Starting it again is safe:
+    // speakLine replaces whatever is currently playing.
+
+    // Nothing is streaming, so the loop may hand the turn back as soon as the
+    // line has finished playing.
+    streamDoneRef.current = true;
+    engine.unlock();
+    engine.speakLine(GREETING_ID, {
+      key: opener.key,
+      text: opener.text,
+      lang,
+      voice: ttsVoice,
+      style,
+    });
+  }, [engine, opener, lang, ttsVoice, style]);
+
   // Session clock, updated once a second.
   useEffect(() => {
     sessionStartedRef.current = Date.now();
@@ -616,12 +681,10 @@ export function useVoiceSession(options: {
     error,
     /** A soft warning (mic or recognition trouble) that shouldn't end the call. */
     notice: mic.error ?? recognition.error?.message ?? null,
-    /** Set when replies are being read by the browser voice, not Gemini. */
-    voiceNotice:
-      speech.voice === "browser" &&
-      (phase === "speaking" || phase === "thinking")
-        ? "Gemini's voice is unavailable right now, so this reply uses your browser's voice. Free-tier TTS quota resets within the hour."
-        : null,
+    /** Set when replies can't be read aloud — Gemini TTS is unavailable. */
+    voiceNotice: speech.unavailable
+      ? "Gemini's voice is unavailable right now, so this reply isn't read aloud — it's on screen instead. Free-tier TTS quota resets within the hour."
+      : null,
     interim: recognition.interim,
     log,
     turnCount,

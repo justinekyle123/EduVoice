@@ -284,21 +284,23 @@ export function QuizUI({
         id: "quiz-start",
         description: "Start a quiz on the topic in the field",
         phrases: ["start the quiz", "start quiz", "generate a quiz", "take the quiz"],
-        spoken: "Starting the quiz.",
+        // The confirmation is fixed, so it plays the pre-generated line instead
+        // of being synthesized (see features/chat/lib/phrases.ts).
+        spokenKey: "nav-quiz-start",
         run: () => voiceActionsRef.current.start(),
       },
       {
         id: "quiz-submit",
         description: "Submit your answers",
         phrases: ["submit answers", "submit the quiz", "finish the quiz"],
-        spoken: "Submitting your answers.",
+        spokenKey: "nav-quiz-submit",
         run: () => voiceActionsRef.current.submit(),
       },
       {
         id: "quiz-leave",
         description: "Leave the quiz and return to the quiz lobby",
         phrases: ["leave the quiz", "quit the quiz", "take another quiz", "another quiz"],
-        spoken: "Back to the quiz lobby.",
+        spokenKey: "nav-quiz-leave",
         run: () => voiceActionsRef.current.leave(),
       },
     ],

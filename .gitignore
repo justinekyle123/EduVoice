@@ -17,8 +17,12 @@
 /.next/
 /out/
 
-# question audio dropped onto a room quiz (data/quiz-audio/<roomId>/)
-/data/
+# Local data: question audio dropped onto a room quiz
+# (data/quiz-audio/<roomId>/) and the runtime speech cache (data/speech/).
+# data/phrases/ is the pre-generated voice-mode phrase bank — committed on
+# purpose, so a fresh clone speaks those lines without spending TTS quota.
+/data/*
+!/data/phrases/
 
 # production
 /build

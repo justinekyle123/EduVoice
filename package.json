@@ -11,7 +11,8 @@
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "db:check": "drizzle-kit check"
+    "db:check": "drizzle-kit check",
+    "phrases:generate": "esbuild scripts/generate-phrases.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.cache/eduvoice/generate-phrases.mjs && node --env-file=.env node_modules/.cache/eduvoice/generate-phrases.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.9.1",

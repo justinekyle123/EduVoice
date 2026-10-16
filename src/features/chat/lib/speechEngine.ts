@@ -2,12 +2,13 @@
 
 // Client-only speech playback engine.
 //
-// The previous implementation waited for the whole reply and then asked Gemini
-// for one long WAV, so a voice turn stalled for seconds before any sound came
-// out. This engine plays audio through the Web Audio API in chunks:
+// This engine plays audio through the Web Audio API:
 //
-//   • text is cut into sentence-sized chunks (see lib/speech.ts),
-//   • chunks are synthesized one at a time, *while the previous chunk plays*,
+//   • a reply is grouped into as few chunks as possible (see lib/speech.ts) —
+//     normally exactly one, so the tutor does not change tone halfway through an
+//     answer,
+//   • chunks are synthesized one at a time, and the next is fetched while the
+//     current one plays,
 //   • each chunk is scheduled onto one audio timeline, so there are no gaps
 //     between sentences,
 //   • a single AnalyserNode sits in the output path so the voice UI can draw a
@@ -16,13 +17,28 @@
 // It is a module-level singleton because voice mode, the message "Listen"
 // button and the orb all need the same playback and the same interrupt switch.
 //
-// Fallbacks: if Gemini TTS is unavailable (no key, quota, network), the chunk is
-// spoken with the browser's built-in voices instead. Audio is cached by text, so
-// replaying an answer is instant and does not spend TTS quota twice.
+// Where the audio comes from: /api/chat/speech (src/app/api/chat/speech). The
+// route returns WAV bytes, saves them under data/speech/<key>.wav the first time
+// a passage is synthesized, and serves them straight from that file afterwards.
+// So a passage is synthesized once and is free every time after — including the
+// pre-generated mode openers, which never touch the API at all.
+//
+// Failure: the browser's own voices are deliberately never used. If Gemini TTS
+// is unavailable (no key, quota, network) the chunk is simply not spoken — the
+// reply stays on screen and the UI is told (snapshot.unavailable) — because
+// swapping in a different, worse voice for half an answer is worse than
+// silence. Bytes are cached in memory by key too, so replaying an answer in the
+// same session is instant.
 
-import { synthesizeSpeech } from "../server/tts";
 import { DEFAULT_TTS_VOICE, type VoiceStyle } from "./voices";
-import { chunkForSpeech, drainSentences, speakableText } from "./speech";
+import {
+  chunksForReply,
+  createSpeechGrouper,
+  drainSentences,
+  speakableText,
+  SPEECH_BUDGET,
+  type SpeechGrouper,
+} from "./speech";
 
 export type SpeechStatus = "idle" | "loading" | "speaking";
 
@@ -31,17 +47,18 @@ export type SpeechSnapshot = {
   speakingId: string | null;
   status: SpeechStatus;
   /**
-   * Where the current/previous audio came from. "browser" means Gemini TTS was
-   * unavailable (no key, quota spent, network) and the built-in voice was used
-   * — the UI says so instead of quietly swapping in a worse voice.
+   * True when Gemini TTS could not speak the current or last reply, so it went
+   * unspoken. The browser's own voices are never used as a substitute, so this
+   * flag is how the UI explains the silence instead of quietly swapping in a
+   * different voice. It clears as soon as a passage synthesizes again.
    */
-  voice: "gemini" | "browser";
+  unavailable: boolean;
 };
 
 const IDLE: SpeechSnapshot = {
   speakingId: null,
   status: "idle",
-  voice: "gemini",
+  unavailable: false,
 };
 
 /** How much audio we are willing to synthesize ahead of the playhead. */
@@ -50,29 +67,34 @@ const LOOKAHEAD_SECONDS = 9;
 const START_LEAD_SECONDS = 0.08;
 /** Short fade on interrupt, so stopping mid-word doesn't click. */
 const FADE_SECONDS = 0.05;
-/** Longest reply we speak for one message; the rest stays on screen. */
-const DEFAULT_SPEAK_BUDGET = 1200;
 const MAX_AUDIO_CACHE_ENTRIES = 10;
-/** Give up on a synthesis request that never comes back and use browser voices. */
-const TTS_TIMEOUT_MS = 20_000;
+/**
+ * Give up on a synthesis request that never comes back and drop the chunk.
+ *
+ * A reply is one request now, and a long one takes a while to render: measured
+ * against the live model, ~10 s for a two-sentence answer, ~20 s for a
+ * paragraph and ~28 s for the largest reply this app will ask for (a
+ * SPEECH_GROUP_CHARS chunk). The limit sits above all of those, so a real
+ * answer is never thrown away as though the request had hung.
+ */
+const TTS_TIMEOUT_MS = 45_000;
 /**
  * Requests allowed per spoken reply.
  *
- * Gemini TTS on the free tier is metered per model (10 requests for
- * gemini-3.1-flash-tts when this was written), so a reply must not cost one
- * request per sentence. Voice mode spends at most two: the opening sentence, so
- * audio starts fast, then everything else in a single request. A one-shot
- * "Listen" playback spends exactly one.
+ * A reply is one chunk — one request — unless it is too long for a single
+ * synthesis, in which case SPEECH_BUDGET / SPEECH_GROUP_CHARS makes it two. This
+ * is headroom rather than a working limit: it bounds a pathological answer
+ * without ever cutting short what the budget lets through.
  */
-const MAX_REQUESTS_PER_REPLY = 2;
+const MAX_REQUESTS_PER_REPLY = 4;
 /**
- * Opening chunk length target. Shorter than a full sentence-group on purpose:
- * the first request is what decides how long the student waits to hear
- * anything, and a short sentence synthesizes noticeably faster.
+ * Chunks allowed to fail before the rest of a reply is dropped.
+ *
+ * TTS is either working or it isn't: a second failure means the remaining
+ * sentences would each wait out their own timeout before falling silent anyway.
+ * The reply stays on screen instead — it is never read out in another voice.
  */
-const OPENING_MIN_CHARS = 25;
-/** Remainder length that forces a second request instead of waiting for the end. */
-const CONTINUATION_CHARS = 700;
+const MAX_CHUNK_FAILURES = 2;
 /**
  * How long to stop calling Gemini TTS after it reports its quota is spent.
  * Without this every chunk pays the full retry-across-three-keys delay before
@@ -80,7 +102,17 @@ const CONTINUATION_CHARS = 700;
  */
 const QUOTA_COOLDOWN_MS = 10 * 60 * 1000;
 
-type Chunk = { id: string; text: string; cacheKey: string };
+type Chunk = {
+  id: string;
+  text: string;
+  cacheKey: string;
+  /**
+   * Server-side file key (a pre-generated phrase). When set, the route serves
+   * that file instead of synthesizing from `text`, and saves a first synthesis
+   * under the same key, so the line is only ever paid for once.
+   */
+  fileKey?: string;
+};
 
 type Run = {
   token: number;
@@ -98,18 +130,26 @@ type Run = {
   maxRequests: number;
   /** Sentences waiting to be synthesized, in order. */
   queue: Chunk[];
-  /** Sentences held back to merge into a longer chunk before synthesis. */
-  pending: string;
+  /**
+   * Sentences grouped into spoken chunks. Shared with the one-shot replay path
+   * (see lib/speech.ts), so a reply is always cut in the same places whichever
+   * way it is spoken — and its audio is therefore already on disk the second
+   * time it is played.
+   */
+  grouper: SpeechGrouper;
   /** Text received from the stream that has not been split yet. */
   buffer: string;
   streamEnded: boolean;
   /** ctx.currentTime that the last scheduled chunk finishes at. */
   scheduledUntil: number;
-  /** True once TTS failed — the rest of this reply uses browser voices. */
-  browserOnly: boolean;
+  /** Chunks of this reply that could not be synthesized. */
   failures: number;
-  /** Set while a browser utterance is playing (its length is unknown). */
-  browserActive: boolean;
+  /**
+   * Synthesis requests currently awaiting a result.
+   * While this is above zero the reply is not finished, however quiet the
+   * audio timeline looks: the next chunk is still being fetched.
+   */
+  inFlight: number;
   settleTimer: number | null;
 };
 
@@ -135,87 +175,34 @@ function cacheAudio(key: string, bytes: Uint8Array) {
   }
 }
 
-/** Pull the WAV bytes out of the `data:audio/wav;base64,…` the server returns. */
-function dataUriToBytes(uri: string): Uint8Array {
-  const comma = uri.indexOf(",");
-  const base64 = comma >= 0 ? uri.slice(comma + 1) : uri;
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return bytes;
+/**
+ * Ask the server for a passage's audio: WAV bytes, either read from the file
+ * that passage was saved as or synthesized once and saved on the way out.
+ */
+async function requestSpeech(body: {
+  text: string;
+  voice: string;
+  style: string;
+  key?: string;
+}): Promise<{ bytes: Uint8Array } | { error: string }> {
+  const res = await fetch("/api/chat/speech", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const payload = (await res.json().catch(() => null)) as
+      | { error?: string }
+      | null;
+    return { error: payload?.error ?? `Speech request failed (${res.status})` };
+  }
+
+  return { bytes: new Uint8Array(await res.arrayBuffer()) };
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// Installed voices vary wildly in quality: the browser's *default* voice is
-// often the worst one on the machine, while cloud/natural voices are close to
-// the Gemini output. Rank the candidates instead of taking the first match.
-const QUALITY_HINTS = [
-  /natural/i,
-  /neural/i,
-  /enhanced/i,
-  /premium/i,
-  /google/i,
-  /siri/i,
-  /aria|jenny|guy|emma|michelle/i,
-];
-
-/** Score 0–3: higher is nicer to listen to. */
-function browserVoiceScore(
-  voice: SpeechSynthesisVoice,
-  wanted: string,
-  base: string
-): number {
-  let score = 0;
-  if (voice.lang.toLowerCase() === wanted) score += 2;
-  else if (voice.lang.toLowerCase().startsWith(base)) score += 1;
-  else if (!voice.lang.toLowerCase().startsWith("en")) return -1;
-
-  // Cloud voices (Chrome, Edge, Windows “Natural”) sound markedly better.
-  if (!voice.localService) score += 2;
-  if (QUALITY_HINTS.some((pattern) => pattern.test(voice.name))) score += 2;
-  return score;
-}
-
-/** The nicest browser voice that can speak `lang`, best effort. */
-function pickBrowserVoice(lang: string): SpeechSynthesisVoice | null {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) return null;
-  const voices = window.speechSynthesis.getVoices();
-  if (voices.length === 0) return null;
-
-  const lower = lang.toLowerCase();
-  const base = lower.split("-")[0];
-
-  let best: SpeechSynthesisVoice | null = null;
-  let bestScore = -1;
-  for (const voice of voices) {
-    const score = browserVoiceScore(voice, lower, base);
-    if (score > bestScore) {
-      best = voice;
-      bestScore = score;
-    }
-  }
-  return best;
-}
-
-/** Resolve once the browser has published its voice list (or we give up). */
-function whenVoicesReady(timeoutMs = 350): Promise<void> {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-    return Promise.resolve();
-  }
-  if (window.speechSynthesis.getVoices().length > 0) return Promise.resolve();
-
-  return new Promise((resolve) => {
-    const done = () => {
-      window.clearTimeout(timer);
-      window.speechSynthesis.removeEventListener("voiceschanged", done);
-      resolve();
-    };
-    const timer = window.setTimeout(done, timeoutMs);
-    window.speechSynthesis.addEventListener("voiceschanged", done);
-  });
 }
 
 class SpeechEngine {
@@ -231,8 +218,9 @@ class SpeechEngine {
   /** Earliest ctx time the next run may start at (after an interrupt fade). */
   private leadUntil = 0;
   /**
-   * While set, Gemini TTS is known to be out of quota, so requests go straight
-   * to the browser voice instead of waiting out the key-pool retries.
+   * While set, Gemini TTS is known to be out of quota. Requests are skipped
+   * rather than waiting out the key-pool retries for every chunk, so a reply
+   * that cannot be spoken fails fast instead of stalling on silence.
    */
   private geminiBlockedUntil = 0;
 
@@ -254,12 +242,17 @@ class SpeechEngine {
     if (
       merged.speakingId === this.snapshot.speakingId &&
       merged.status === this.snapshot.status &&
-      merged.voice === this.snapshot.voice
+      merged.unavailable === this.snapshot.unavailable
     ) {
       return;
     }
     this.snapshot = merged;
     for (const listener of this.listeners) listener();
+  }
+
+  /** Back to idle, keeping the "TTS is unavailable" flag the UI is showing. */
+  private setIdle() {
+    this.setSnapshot({ speakingId: null, status: "idle" });
   }
 
   /** The analyser node that carries the tutor's voice, for visualizers. */
@@ -332,14 +325,46 @@ class SpeechEngine {
     voice: string = DEFAULT_TTS_VOICE,
     options?: { maxChars?: number; style?: VoiceStyle }
   ) {
-    // One request for the whole message: `chunkForSpeech` merges sentences up
-    // to the budget, and the run stops after a single request anyway.
-    const budget = options?.maxChars ?? DEFAULT_SPEAK_BUDGET;
-    const chunks = chunkForSpeech(text, { maxChars: budget });
+    // Cut the message the same way voice mode cuts a reply it is streaming, so
+    // replaying an answer plays the audio that was already generated for it
+    // rather than paying for a second copy cut differently.
+    const budget = options?.maxChars ?? SPEECH_BUDGET;
+    const chunks = chunksForReply(text);
     if (chunks.length === 0) return;
 
-    const run = this.begin(id, lang, voice, budget, options?.style, 1);
+    const run = this.begin(id, lang, voice, budget, options?.style);
     for (const chunk of chunks) this.enqueue(run, chunk);
+    this.endRun(run);
+  }
+
+  /**
+   * Speak a fixed line that may already exist as a file on disk — the voice-mode
+   * openers in lib/phrases.ts.
+   *
+   * One chunk with a known key: when the phrase bank has been generated
+   * (`npm run phrases:generate`) this costs no TTS request at all, and if it has
+   * not, the first use synthesizes the line and saves it under the same key, so
+   * the line is only ever paid for once.
+   */
+  speakLine(
+    id: string,
+    options: {
+      key: string;
+      text: string;
+      lang: string;
+      voice: string;
+      style?: VoiceStyle;
+    }
+  ) {
+    const run = this.begin(
+      id,
+      options.lang,
+      options.voice,
+      options.text.length + 8,
+      options.style,
+      1
+    );
+    this.enqueue(run, options.text, options.key);
     this.endRun(run);
   }
 
@@ -377,10 +402,7 @@ class SpeechEngine {
         const { ready } = drainSentences(run.buffer, { flush: true });
         run.buffer = "";
         for (const sentence of ready) this.addSentence(run, sentence);
-        if (run.pending) {
-          this.enqueue(run, run.pending);
-          run.pending = "";
-        }
+        for (const chunk of run.grouper.flush()) this.enqueue(run, chunk);
         this.endRun(run);
       },
       cancel: () => {
@@ -395,10 +417,6 @@ class SpeechEngine {
     const run = this.run;
     if (run?.settleTimer) window.clearTimeout(run.settleTimer);
     this.run = null;
-
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
-    }
 
     const sources = this.sources;
     this.sources = [];
@@ -428,7 +446,7 @@ class SpeechEngine {
       }, FADE_SECONDS * 1000 + 20);
     }
 
-    this.setSnapshot(IDLE);
+    this.setIdle();
   }
 
   // -------------------------------------------------------------------------
@@ -453,20 +471,17 @@ class SpeechEngine {
       lang,
       voice,
       style: style ?? "tutor",
-      budget: maxChars ?? DEFAULT_SPEAK_BUDGET,
+      budget: maxChars ?? SPEECH_BUDGET,
       spent: 0,
       requests: 0,
       maxRequests,
       queue: [],
-      pending: "",
+      grouper: createSpeechGrouper(),
       buffer: "",
       streamEnded: false,
       scheduledUntil: this.leadUntil,
-      // No audio graph, or Gemini TTS is known to be out of quota: go straight
-      // to the browser voice instead of making the student wait for a failure.
-      browserOnly: ctx === null || Date.now() < this.geminiBlockedUntil,
       failures: 0,
-      browserActive: false,
+      inFlight: 0,
       settleTimer: null,
     };
     this.run = run;
@@ -475,43 +490,27 @@ class SpeechEngine {
   }
 
   /**
-   * Decide what to speak next, keeping the reply's request count low.
+   * Hand one finished sentence to the run's grouper and speak whatever chunks
+   * that completes.
    *
-   * The first complete sentence is sent on its own so sound starts quickly;
-   * everything after it is held back and sent as one longer request. That is
-   * two TTS requests for a whole reply instead of one per sentence.
+   * The sentence is cleaned before it is grouped, so the cuts are made on the
+   * words that will actually be said — which is what lets a later replay of the
+   * same reply reproduce them exactly (see chunksForReply).
    */
   private addSentence(run: Run, sentence: string) {
-    const merged = run.pending ? `${run.pending} ${sentence}` : sentence;
-    this.wake(run);
-
-    const hasSoundQueued = run.requests > 0 || run.queue.length > 0;
-    if (!hasSoundQueued) {
-      // Opening sentence: speak as soon as there is enough of it to sound like
-      // speech, so the tutor's voice arrives quickly.
-      if (merged.length < OPENING_MIN_CHARS) {
-        run.pending = merged;
-        return;
-      }
-      run.pending = "";
-      this.enqueue(run, merged);
-      return;
-    }
-
-    // Later sentences: wait for the end of the reply (or a long remainder) and
-    // send them together, so a whole answer costs a second request at most.
-    run.pending = merged;
-    if (run.pending.length >= CONTINUATION_CHARS) {
-      const held = run.pending;
-      run.pending = "";
-      this.enqueue(run, held);
-    }
+    const spoken = speakableText(sentence);
+    if (!spoken) return;
+    for (const chunk of run.grouper.add(spoken)) this.enqueue(run, chunk);
   }
 
-  private enqueue(run: Run, raw: string) {
+  private enqueue(run: Run, raw: string, fileKey?: string) {
     const left = run.budget - run.spent;
     if (left <= 0) return;
     if (run.requests >= run.maxRequests) return;
+    // This utterance has already failed too many times to be spoken: don't keep
+    // spending requests on sentences nobody will hear (streaming replies keep
+    // arriving after the run has given up).
+    if (run.failures >= MAX_CHUNK_FAILURES) return;
 
     const text = speakableText(raw);
     if (!text) return;
@@ -524,9 +523,12 @@ class SpeechEngine {
     run.queue.push({
       id: run.id,
       text: spoken,
-      // Style is part of the key: the same sentence read in Hint mode and in
-      // Interview mode must not replay the other one's audio.
-      cacheKey: `${run.voice}|${run.style}|${spoken}`,
+      fileKey,
+      // Voice + words, matching the server's key: the style shapes the first
+      // recording only, so switching study mode replays the same audio instead
+      // of re-synthesizing it. A file-backed chunk is keyed by its file instead,
+      // which is what makes a pre-generated line a free replay.
+      cacheKey: fileKey ?? `${run.voice}|${spoken}`,
     });
     this.wake(run);
   }
@@ -561,8 +563,18 @@ class SpeechEngine {
         }
 
         const ctx = this.ctx;
-        const ahead = run.scheduledUntil - (ctx?.currentTime ?? 0);
-        if (!run.browserOnly && ctx && ahead > LOOKAHEAD_SECONDS) {
+        if (!ctx) {
+          // No Web Audio here, so nothing could be played even if the server
+          // synthesized it: drop the queue rather than spend requests on it.
+          run.queue.length = 0;
+          this.setSnapshot({ unavailable: true });
+          if (run.streamEnded) return;
+          await sleep(80);
+          continue;
+        }
+
+        const ahead = run.scheduledUntil - ctx.currentTime;
+        if (ahead > LOOKAHEAD_SECONDS) {
           // Enough audio queued; let the playhead catch up before spending
           // another TTS request.
           await sleep(150);
@@ -572,23 +584,33 @@ class SpeechEngine {
         const chunk = run.queue.shift();
         if (!chunk) continue;
 
-        if (run.browserOnly) {
-          await this.speakWithBrowser(run, chunk, token);
-          continue;
+        // Count the work before awaiting it. `settle()` refuses to close the run
+        // while this is above zero, so the quiet gap between two sentences can't
+        // be mistaken for the end of the reply — which is how a long answer used
+        // to stop after its first sentence and lose the rest.
+        run.inFlight += 1;
+        try {
+          const buffer = await this.audioFor(run, chunk, token);
+          if (token !== this.token || this.run !== run) return;
+
+          if (buffer) {
+            run.failures = 0;
+            this.schedule(run, chunk, buffer);
+          } else {
+            // Gemini TTS could not speak this sentence. The browser's own voices
+            // are never a substitute, so it goes unspoken and the UI is told;
+            // a second failure drops the rest of the reply rather than spending
+            // a timeout on every remaining chunk.
+            run.failures += 1;
+            this.setSnapshot({ unavailable: true });
+            if (run.failures >= MAX_CHUNK_FAILURES) run.queue.length = 0;
+          }
+        } finally {
+          run.inFlight -= 1;
+          // The sound may have run out while we were fetching, so re-check now
+          // that nothing is outstanding.
+          if (token === this.token) this.settle();
         }
-
-        const buffer = await this.audioFor(run, chunk, token);
-        if (token !== this.token || this.run !== run) return;
-
-        if (buffer) {
-          this.schedule(run, chunk, buffer);
-        } else {
-          // TTS unavailable for this chunk — keep the answer audible with the
-          // browser's own voice rather than dropping a sentence.
-          await this.speakWithBrowser(run, chunk, token);
-        }
-
-        if (run.failures >= 2) run.browserOnly = true;
       }
     } finally {
       this.pumping = false;
@@ -610,40 +632,36 @@ class SpeechEngine {
     try {
       // A hung request must not stall the whole reply, so race it with a timer.
       const res = await Promise.race([
-        synthesizeSpeech({
+        requestSpeech({
           text: chunk.text,
           voice: run.voice,
           style: run.style,
+          // A pre-generated line (a mode opener) is asked for by key, so the
+          // route can serve the file it already has.
+          ...(chunk.fileKey ? { key: chunk.fileKey } : {}),
         }),
         sleep(TTS_TIMEOUT_MS).then(() => null),
       ]);
       if (token !== this.token) return null;
 
       if (!res) {
-        run.failures += 1;
         console.warn("[voice] TTS timed out");
         return null;
       }
 
       if ("error" in res) {
-        run.failures += 1;
         // A spent quota is not worth retrying per sentence — every later chunk
-        // would pay the same multi-key delay. Park Gemini and fall back fast.
+        // would pay the same multi-key delay. Park the model and fail fast.
         if (/quota|rate limit|RESOURCE_EXHAUSTED|429/i.test(res.error)) {
           this.geminiBlockedUntil = Date.now() + QUOTA_COOLDOWN_MS;
-          run.browserOnly = true;
-          this.setSnapshot({ voice: "browser" });
         }
         console.warn("[voice] TTS failed:", res.error);
         return null;
       }
-      const bytes = dataUriToBytes(res.audio);
-      cacheAudio(chunk.cacheKey, bytes);
-      run.failures = 0;
-      return this.decode(bytes);
+      cacheAudio(chunk.cacheKey, res.bytes);
+      return this.decode(res.bytes);
     } catch (err) {
       if (token !== this.token) return null;
-      run.failures += 1;
       console.warn("[voice] TTS request failed:", err);
       return null;
     }
@@ -688,55 +706,10 @@ class SpeechEngine {
     this.setSnapshot({
       speakingId: chunk.id,
       status: "speaking",
-      voice: "gemini",
+      // Audio is playing, so any earlier failure has been made good.
+      unavailable: false,
     });
     this.scheduleSettle(run.scheduledUntil - ctx.currentTime);
-  }
-
-  /** Browser speech synthesis, used when Gemini TTS is unavailable. */
-  private async speakWithBrowser(run: Run, chunk: Chunk, token: number) {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-    await whenVoicesReady();
-    if (token !== this.token || this.run !== run) return;
-
-    const synth = window.speechSynthesis;
-    const utterance = new SpeechSynthesisUtterance(chunk.text);
-    utterance.lang = run.lang;
-    utterance.rate = 1;
-    // Take the best installed voice, not whatever happens to be the default
-    // (which is usually the worst one on the machine).
-    const voice = pickBrowserVoice(run.lang);
-    if (voice) utterance.voice = voice;
-
-    run.browserActive = true;
-    this.setSnapshot({
-      speakingId: chunk.id,
-      status: "speaking",
-      voice: "browser",
-    });
-
-    await new Promise<void>((resolve) => {
-      const finish = () => {
-        window.clearTimeout(guard);
-        run.browserActive = false;
-        resolve();
-      };
-      // Some browsers never fire onend for an interrupted utterance.
-      const guard = window.setTimeout(
-        finish,
-        Math.max(2000, chunk.text.length * 90)
-      );
-      utterance.onend = finish;
-      utterance.onerror = finish;
-
-      if (token !== this.token) {
-        finish();
-        return;
-      }
-      synth.speak(utterance);
-    });
-
-    if (token === this.token) this.settle();
   }
 
   /** Move to idle once every queued chunk has finished playing. */
@@ -745,10 +718,17 @@ class SpeechEngine {
     const ctx = this.ctx;
 
     if (!run) {
-      if (this.snapshot.status !== "idle") this.setSnapshot(IDLE);
+      if (this.snapshot.status !== "idle") this.setIdle();
       return;
     }
-    if (run.browserActive || run.queue.length > 0 || run.pending || run.buffer) {
+    if (run.queue.length > 0 || run.buffer) {
+      this.scheduleSettle(0.25);
+      return;
+    }
+    // Something is still being fetched: silence right now is the gap between two
+    // sentences, not the end of the reply. Closing the run here is what used to
+    // drop the rest of a long answer when its next chunk arrived.
+    if (run.inFlight > 0) {
       this.scheduleSettle(0.25);
       return;
     }
@@ -765,13 +745,13 @@ class SpeechEngine {
 
     if (run.settleTimer) window.clearTimeout(run.settleTimer);
     this.run = null;
-    this.setSnapshot(IDLE);
+    this.setIdle();
   }
 
   private scheduleSettle(afterSeconds: number) {
     const run = this.run;
     const ctx = this.ctx;
-    if (!run || !ctx || run.browserActive) return;
+    if (!run || !ctx) return;
     if (run.settleTimer) window.clearTimeout(run.settleTimer);
     run.settleTimer = window.setTimeout(
       () => this.settle(),

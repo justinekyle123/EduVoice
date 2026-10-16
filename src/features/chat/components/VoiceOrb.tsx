@@ -10,11 +10,16 @@ import type { VoicePhase } from "../hooks/useVoiceSession";
  * through the playback AnalyserNode while speaking, and the microphone level
  * while listening. Drawing happens on the animation frame with the levels read
  * from refs, so nothing here re-renders React 60 times a second.
+ *
+ * `accent` recolours the ring per study mode. It arrives as two comma-separated
+ * channel triplets ("0, 230, 251") rather than objects so the effect below can
+ * list them as dependencies without restarting the animation on every render.
  */
 export function VoiceOrb({
   phase,
   micLevel,
   playbackAnalyser,
+  accent,
   size = 300,
   className,
 }: {
@@ -23,6 +28,8 @@ export function VoiceOrb({
   micLevel: { current: number };
   /** Output analyser of the speech engine (null before audio is prepared). */
   playbackAnalyser: AnalyserNode | null;
+  /** Mode accent: bright and deep channels, e.g. { bright: "0, 230, 251" }. */
+  accent?: { bright: string; deep: string };
   /**
    * Fallback box size used before the element is measured. Prefer `className`
    * with width/height classes — the drawing scales to whatever the element is.
@@ -68,6 +75,10 @@ export function VoiceOrb({
     const observer =
       typeof ResizeObserver !== "undefined" ? new ResizeObserver(resize) : null;
     observer?.observe(canvas);
+
+    // Mode accent, with the brand cyan as the default.
+    const bright = accent?.bright ?? "0, 230, 251";
+    const deep = accent?.deep ?? "8, 145, 178";
 
     const BARS = 64;
     let frequencies = new Uint8Array(0);
@@ -131,9 +142,9 @@ export function VoiceOrb({
         cy,
         baseRadius * (1.5 + smoothLevel * 0.5)
       );
-      glow.addColorStop(0, `rgba(0, 230, 251, ${0.16 + smoothLevel * 0.22})`);
-      glow.addColorStop(0.6, `rgba(6, 182, 212, ${0.06 + smoothLevel * 0.08})`);
-      glow.addColorStop(1, "rgba(6, 182, 212, 0)");
+      glow.addColorStop(0, `rgba(${bright}, ${0.16 + smoothLevel * 0.22})`);
+      glow.addColorStop(0.6, `rgba(${deep}, ${0.06 + smoothLevel * 0.08})`);
+      glow.addColorStop(1, `rgba(${deep}, 0)`);
       ctx.fillStyle = glow;
       ctx.fillRect(0, 0, width, height);
 
@@ -146,8 +157,8 @@ export function VoiceOrb({
         cx + baseRadius,
         cy + baseRadius
       );
-      core.addColorStop(0, "rgba(0, 230, 251, 0.92)");
-      core.addColorStop(1, "rgba(8, 145, 178, 0.92)");
+      core.addColorStop(0, `rgba(${bright}, 0.92)`);
+      core.addColorStop(1, `rgba(${deep}, 0.92)`);
       ctx.fillStyle = current === "muted" ? "rgba(148, 163, 184, 0.7)" : core;
       ctx.fill();
 
@@ -178,7 +189,7 @@ export function VoiceOrb({
         const cos = Math.cos(angle);
         const sin = Math.sin(angle);
 
-        ctx.strokeStyle = `rgba(0, 230, 251, ${
+        ctx.strokeStyle = `rgba(${bright}, ${
           (0.35 + 0.55 * Math.min(1, amplitude)) *
           (current === "muted" ? 0.4 : 1)
         })`;
@@ -195,7 +206,7 @@ export function VoiceOrb({
       cancelAnimationFrame(raf);
       observer?.disconnect();
     };
-  }, [micLevel, size]);
+  }, [micLevel, size, accent?.bright, accent?.deep]);
 
   return (
     <canvas
