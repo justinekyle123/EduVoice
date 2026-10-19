@@ -47,6 +47,125 @@ export function firstMatch(text: string, phrases: readonly string[]): string | n
 }
 
 // ---------------------------------------------------------------------------
+// Which language to answer in
+// ---------------------------------------------------------------------------
+
+// The vocabulary below already accepts Filipino and Cebuano commands (feature
+// 6.5), but the confirmation used to come back in English however the student
+// spoke. These are the command words a student actually says, so a reply can
+// follow the language of the utterance even while the listening language is
+// still set to English — say "tabang" and the answer is Cebuano.
+//
+// Matched whole-token, and kept to words with no English reading ("gusto" is
+// deliberately absent, being a real English word), so a marker cannot fire on an
+// English command by accident.
+const FIL_COMMAND_MARKERS = new Set([
+  "tulong",
+  "tulungan",
+  "sagot",
+  "sagutin",
+  "pindutin",
+  "pumunta",
+  "puntahan",
+  "bumalik",
+  "ibalik",
+  "ulitin",
+  "itigil",
+  "ihinto",
+  "basahin",
+  "pakiusap",
+  "pahina",
+  "pumili",
+  "piliin",
+  "sabihin",
+  "ipakita",
+  "buksan",
+  "magbukas",
+  "narinig",
+  "naintindihan",
+  "napakinggan",
+  "pagsusulit",
+  "gawain",
+  "susunod",
+  "nakaraan",
+  "nauna",
+  "tanong",
+  "magpatuloy",
+  "hindi",
+  "wala",
+  "saan",
+  "paano",
+  "bakit",
+  "ano",
+]);
+
+const CEB_COMMAND_MARKERS = new Set([
+  "tabang",
+  "tabangi",
+  "palihug",
+  "undang",
+  "hunong",
+  "kasabot",
+  "sabot",
+  "ingna",
+  "sulti",
+  "basaha",
+  "pilia",
+  "pilion",
+  "panid",
+  "butang",
+  "tan-awa",
+  "niini",
+  "niining",
+  "kini",
+  "kana",
+  "naa",
+  "unsa",
+  "ngano",
+  "asa",
+  "dili",
+  "balik",
+  "kadto",
+  "adto",
+  "sulod",
+  "imo",
+  "imong",
+  "nako",
+  "nimo",
+  "pangutana",
+  "ipadayon",
+  "mobalik",
+  "wala",
+]);
+
+/**
+ * Filipino or Cebuano, whichever language this utterance is clearly in, or null
+ * when nothing marks it as either — in which case the caller keeps the language
+ * the student chose in the panel.
+ *
+ * A tie goes to Filipino, matching `detectLanguage` in features/chat/lib/detect.
+ * That is the kinder mistake: a Cebuano speaker answered in Filipino still hears
+ * something they understand, which is the point of the whole feature.
+ */
+export function detectCommandLanguage(text: string): "fil" | "ceb" | null {
+  const tokens = text
+    .toLowerCase()
+    .replace(/[^a-z0-9\u00f1\s-]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+
+  let fil = 0;
+  let ceb = 0;
+  for (const token of tokens) {
+    if (FIL_COMMAND_MARKERS.has(token)) fil += 1;
+    if (CEB_COMMAND_MARKERS.has(token)) ceb += 1;
+  }
+
+  if (fil === 0 && ceb === 0) return null;
+  return ceb > fil ? "ceb" : "fil";
+}
+
+// ---------------------------------------------------------------------------
 // Navigation ("go to the quiz", "pumunta sa dokumento", "adto sa istorya")
 // ---------------------------------------------------------------------------
 
@@ -103,6 +222,34 @@ const NAV_SYNONYMS: Record<string, string[]> = {
     "exam",
     "pagsusulit",
     "pagsulay",
+  ],
+  "/dashboard/documents": [
+    "document",
+    "documents",
+    "file",
+    "files",
+    "my notes",
+    "notes",
+    "upload",
+    "upload a document",
+    "study material",
+    "materials",
+    "dokumento",
+    "mga dokumento",
+    "materyal",
+    "babasahin",
+  ],
+  "/dashboard/flashcards": [
+    "flashcard",
+    "flashcards",
+    "flash card",
+    "flash cards",
+    "deck",
+    "decks",
+    "memory cards",
+    "review cards",
+    "mga flashcard",
+    "mga kard",
   ],
   "/dashboard/tasks": [
     "task",

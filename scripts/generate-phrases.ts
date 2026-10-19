@@ -23,6 +23,7 @@ import {
   savePhraseAudio,
 } from "../src/features/chat/server/speechStore";
 import { synthesizeSpeechBytes } from "../src/features/chat/server/ttsCore";
+import { hasReadyKey } from "../src/lib/ai/keys";
 
 const force = process.argv.includes("--force");
 
@@ -30,6 +31,17 @@ async function main() {
   if (!process.env.GEMINI_API_KEY?.trim()) {
     console.error(
       "No GEMINI_API_KEY. Put one in .env (see .env.example) and run this again."
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  // Every key parked on a cooldown means every line would fail the same way —
+  // each one after walking the pool — so say so now instead of grinding.
+  if (!hasReadyKey()) {
+    console.error(
+      "No Gemini key is usable right now (a spent daily quota parks one for an hour)." +
+        " Nothing was written; run this again once the quota resets."
     );
     process.exitCode = 1;
     return;
@@ -58,6 +70,17 @@ async function main() {
     if ("error" in result) {
       failed.push(`${line.key}: ${result.error}`);
       console.error(`  ✗ ${line.key} — ${result.error}`);
+      // A spent quota is spent for every remaining line too, and each attempt
+      // walks the whole key pool first — so stop rather than grind through the
+      // bank, and say what to do about it.
+      if (result.quota) {
+        console.error(
+          "\nOut of TTS quota — stopping here. The bank is only written for the lines" +
+            " that were rendered; run this again once the quota resets (the lines already" +
+            " on disk are skipped)."
+        );
+        break;
+      }
       continue;
     }
 

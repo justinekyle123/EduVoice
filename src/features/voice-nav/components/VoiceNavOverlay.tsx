@@ -130,6 +130,10 @@ export function VoiceNavOverlay() {
                   ))}
                 </select>
               </label>
+              <p className="px-1 text-[11px] leading-5 text-zinc-400 dark:text-zinc-500">
+                EduVoice answers in the language it hears — Filipino, Cebuano or
+                English — whichever is set here.
+              </p>
 
               {/* This page's own commands */}
               {nav.pageCommands.length > 0 && (

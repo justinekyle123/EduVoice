@@ -19,9 +19,18 @@ import {
   isAnswerCorrect,
   type QuestionType,
 } from "../lib/generate";
+import {
+  renderQuizQuestionAudio,
+  type QuizAudioStatus,
+} from "./voiceRender";
 
 // Same Clerk → Postgres user resolution the chat and rooms features use.
+const userIdCache = new Map<string, string>();
+
 async function requireUserId(clerkId: string): Promise<string> {
+  const cached = userIdCache.get(clerkId);
+  if (cached) return cached;
+
   let user = await getUserByClerkId(clerkId);
   if (!user) {
     const clerkUser = await currentUser();
@@ -31,6 +40,7 @@ async function requireUserId(clerkId: string): Promise<string> {
       name: clerkUser?.fullName ?? clerkUser?.username ?? null,
     });
   }
+  userIdCache.set(clerkId, user.id);
   return user.id;
 }
 
@@ -41,6 +51,12 @@ export type SafeQuestion = {
   type: QuestionType;
   options: string[] | null;
   order: number;
+  /**
+   * The question's pre-rendered narration clip in this quiz's audio folder, or
+   * null when it could not be rendered — the voice quiz then synthesizes the
+   * line live (see server/voiceRender.ts). A file name, never a path.
+   */
+  audioFile: string | null;
 };
 
 const MIN_QUESTIONS = 3;
@@ -62,6 +78,7 @@ async function questionsFor(quizId: string): Promise<SafeQuestion[]> {
       type: quizQuestions.type,
       options: quizQuestions.options,
       order: quizQuestions.order,
+      audioFile: quizQuestions.audioFile,
     })
     .from(quizQuestions)
     .where(eq(quizQuestions.quizId, quizId))
@@ -191,16 +208,76 @@ async function createQuiz(input: {
       type: quizQuestions.type,
       options: quizQuestions.options,
       order: quizQuestions.order,
+      audioFile: quizQuestions.audioFile,
     });
+
+  // Finish the best-effort render before handing the quiz over. This keeps a
+  // newly generated voice quiz continuous from its first question onward and
+  // avoids relying on post-response work that may be interrupted by a runtime.
+  const prepared = await withNarrationClips(
+    quiz.id,
+    inserted as SafeQuestion[]
+  );
 
   const attempt = await openAttempt(quiz.id, input.userId, room?.id ?? null);
 
   return {
     quiz,
-    questions: inserted as SafeQuestion[],
+    questions: prepared.questions,
+    audioStatus: prepared.status,
     attemptId: attempt.id,
     provider: generated.provider,
     roomName: room?.name ?? null,
+  };
+}
+
+/**
+ * Render a new quiz's questions into narration clips and stamp each key onto its
+ * row. Best-effort by design: a question with no clip is still perfectly
+ * answerable, because the voice player synthesizes the line it has no file for.
+ */
+async function withNarrationClips(
+  quizId: string,
+  questions: SafeQuestion[]
+): Promise<{ questions: SafeQuestion[]; status: QuizAudioStatus }> {
+  if (questions.length === 0) return { questions, status: "ready" };
+
+  let rendered: Map<string, string>;
+  let status: QuizAudioStatus;
+  try {
+    const result = await renderQuizQuestionAudio({ quizId, questions });
+    rendered = result.clips;
+    status = result.status;
+  } catch (err) {
+    console.warn("[quiz] could not prepare the voice quiz audio:", err);
+    return { questions, status: "unavailable" };
+  }
+  if (rendered.size === 0) return { questions, status };
+
+  // One update per clip: the key only exists once the file is written, and a quiz
+  // is at most fifteen questions.
+  try {
+    await Promise.all(
+      [...rendered].map(([questionId, key]) =>
+        db
+          .update(quizQuestions)
+          .set({ audioFile: key })
+          .where(eq(quizQuestions.id, questionId))
+      )
+    );
+  } catch (err) {
+    // The clips are on disk either way; a failed stamp only costs a re-render on
+    // the next attempt, and the stored key is what the player is told to use — so
+    // a row that kept a null still plays, just through live synthesis.
+    console.warn("[quiz] rendered the clips but could not record them:", err);
+  }
+
+  return {
+    questions: questions.map((question) => ({
+      ...question,
+      audioFile: rendered.get(question.id) ?? question.audioFile,
+    })),
+    status,
   };
 }
 
@@ -293,12 +370,57 @@ export async function startQuizAttempt(input: {
 
   const attempt = await openAttempt(quiz.id, userId, input.roomId);
 
-  return { quiz, questions, attemptId: attempt.id };
+  return {
+    quiz,
+    questions,
+    attemptId: attempt.id,
+    audioStatus: questions.every((question) => question.audioFile)
+      ? "ready"
+      : "unavailable",
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Grade
 // ---------------------------------------------------------------------------
+
+/**
+ * Judge a single answer, for the voice quiz's spoken feedback.
+ *
+ * The answers never leave the server while a quiz is being taken — a question
+ * reaches the browser without its answer (see `SafeQuestion`) — so "was that
+ * right?" has to be asked here rather than worked out client-side. Nothing is
+ * written: the attempt is graded again by `submitQuizAttempt` at the end, through
+ * the same comparison, so the verdict the student heard and the score they end up
+ * with cannot disagree.
+ */
+export async function gradeQuizAnswer(input: {
+  questionId: string;
+  userAnswer: string;
+}) {
+  const { userId: clerkId } = await auth();
+  if (!clerkId) throw new Error("Not authenticated");
+  const userId = await requireUserId(clerkId);
+
+  const [row] = await db
+    .select({
+      type: quizQuestions.type,
+      correctAnswer: quizQuestions.correctAnswer,
+      explanation: quizQuestions.explanation,
+    })
+    .from(quizQuestions)
+    .innerJoin(quizzes, eq(quizzes.id, quizQuestions.quizId))
+    .where(
+      and(eq(quizQuestions.id, input.questionId), eq(quizzes.userId, userId))
+    );
+  if (!row) throw new Error("That question is not part of one of your quizzes");
+
+  return {
+    correct: isAnswerCorrect(row.type, row.correctAnswer, input.userAnswer.trim()),
+    correctAnswer: row.correctAnswer,
+    explanation: row.explanation,
+  };
+}
 
 /**
  * Grade a finished attempt, store the per-question answers, and close the
@@ -408,17 +530,21 @@ export async function getRecentQuizzes(limit = 8) {
       title: quizzes.title,
       topic: quizzes.topic,
       createdAt: quizzes.createdAt,
+      // The outer column is named with its table explicitly. A bare
+      // `${quizzes.id}` in a select projection renders unqualified (just "id"),
+      // which inside these subqueries binds to the subquery's own id column and
+      // silently counts nothing.
       questionCount: sql<number>`(
         select count(*)::int from ${quizQuestions} q
-        where q.quiz_id = ${quizzes.id}
+        where q.quiz_id = ${sql.raw('"quizzes"."id"')}
       )`,
       attempts: sql<number>`(
         select count(*)::int from ${quizAttempts} a
-        where a.quiz_id = ${quizzes.id} and a.completed_at is not null
+        where a.quiz_id = ${sql.raw('"quizzes"."id"')} and a.completed_at is not null
       )`,
       bestScore: sql<number>`coalesce((
         select max(a.score) from ${quizAttempts} a
-        where a.quiz_id = ${quizzes.id} and a.completed_at is not null
+        where a.quiz_id = ${sql.raw('"quizzes"."id"')} and a.completed_at is not null
       ), 0)`,
     })
     .from(quizzes)

@@ -183,6 +183,18 @@ export const dashboardNav = [
     description: "Auto-generated quizzes from your uploaded materials, with instant scoring.",
   },
   {
+    href: "/dashboard/documents",
+    label: "Documents",
+    icon: FileText,
+    description: "Upload your PDFs and notes, then ask questions grounded in them.",
+  },
+  {
+    href: "/dashboard/flashcards",
+    label: "Flashcards",
+    icon: Layers,
+    description: "Decks built from your material, reviewed on a spaced-repetition schedule.",
+  },
+  {
     href: "/dashboard/tasks",
     label: "Tasks",
     icon: ListTodo,

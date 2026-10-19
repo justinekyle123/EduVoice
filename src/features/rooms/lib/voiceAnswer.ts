@@ -34,6 +34,39 @@ export type SpokenAnswer = {
 
 const LETTERS = ["a", "b", "c", "d", "e", "f", "g", "h"];
 
+/**
+ * How a letter comes back from speech recognition.
+ *
+ * A spoken "B" is rarely the single character: the browser writes "b", "be" or
+ * "bee", and "C" arrives as "sea" as often as "c". These are matched only when
+ * they are the whole utterance (or right after "option"/"letter"), so a sentence
+ * containing "the sea" stays an answer rather than becoming option C.
+ */
+const SPOKEN_LETTERS: Record<string, string> = {
+  a: "a",
+  ay: "a",
+  eh: "a",
+  b: "b",
+  be: "b",
+  bee: "b",
+  c: "c",
+  see: "c",
+  sea: "c",
+  d: "d",
+  de: "d",
+  dee: "d",
+  e: "e",
+  ee: "e",
+  f: "f",
+  ef: "f",
+  eff: "f",
+  g: "g",
+  gee: "g",
+  h: "h",
+  ache: "h",
+  aitch: "h",
+};
+
 const NUMBER_WORDS: Record<string, number> = {
   one: 1,
   two: 2,
@@ -137,17 +170,15 @@ function matchOptionText(text: string, options: readonly string[]): number | nul
   return fragmentBest;
 }
 
-/** "option b" / "letter c" / a lone "b" → the option at that position. */
+/** "option b" / "letter sea" / a lone "bee" → the option at that position. */
 function matchOptionLetter(text: string, count: number): number | null {
-  const marked = text.match(/\b(?:option|opt|letter|choice|answer)\s+([a-h])\b/);
-  if (marked) {
-    const index = LETTERS.indexOf(marked[1]);
-    if (index >= 0 && index < count) return index;
-  }
-  if (LETTERS.includes(text) && LETTERS.indexOf(text) < count) {
-    return LETTERS.indexOf(text);
-  }
-  return null;
+  const marked = text.match(/\b(?:option|opt|letter|choice|answer)\s+([a-z]+)\b/);
+  const named = marked ? SPOKEN_LETTERS[marked[1]] : undefined;
+  const letter = named ?? SPOKEN_LETTERS[text];
+  if (letter === undefined) return null;
+
+  const index = LETTERS.indexOf(letter);
+  return index >= 0 && index < count ? index : null;
 }
 
 /** "number two" / "the second one" / a lone "2" → the option at that position. */
