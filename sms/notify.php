@@ -37,6 +37,120 @@ function notify_usage(): void
 }
 
 /**
+ * The clock this run dates itself by, and the due times it has the app print.
+ *
+ * Minutes as JavaScript's `getTimezoneOffset()` reports them — `-480` for
+ * Asia/Manila — because that is the number the app renders a due time with.
+ *
+ * PHP is asked for its own offset only as a last resort: a stock XAMPP ships
+ * `date.timezone=Europe/Berlin`, and a reminder written in Berlin time reads
+ * six hours wrong on a phone in Manila. The machine's real offset is read
+ * instead, with NOTIFY_TZ_OFFSET_MINUTES in sms/.env overriding both.
+ *
+ * @return array{offset: int, source: string}
+ */
+function notify_clock(): array
+{
+    $configured = sms_env('NOTIFY_TZ_OFFSET_MINUTES');
+    if ($configured !== '') {
+        if (preg_match('/^-?\d{1,4}$/', $configured) === 1 && abs((int) $configured) <= 840) {
+            return ['offset' => (int) $configured, 'source' => 'sms/.env'];
+        }
+        notify_log('WARN  NOTIFY_TZ_OFFSET_MINUTES is not a valid offset — ignoring it.');
+    }
+
+    $machine = notify_machine_offset();
+    if ($machine !== null) {
+        return ['offset' => $machine, 'source' => "this machine's clock"];
+    }
+
+    return ['offset' => -intdiv((int) date('Z'), 60), 'source' => "PHP's timezone"];
+}
+
+/**
+ * This machine's offset from UTC, JS-style, or null when it cannot be read.
+ *
+ * Nothing in PHP knows the machine's clock — `date()` only knows php.ini — so the
+ * operating system has to be asked. On Windows that is the registry's
+ * `ActiveTimeBias`, which is the current offset in minutes with any daylight
+ * saving already applied and, conveniently, the same sign as
+ * `getTimezoneOffset()`. It is read on every run, so a timezone change cannot
+ * leave a stale offset behind.
+ */
+function notify_machine_offset(): ?int
+{
+    if (!function_exists('exec')) {
+        return null;
+    }
+
+    $lines = [];
+    $status = 0;
+
+    if (PHP_OS_FAMILY === 'Windows') {
+        exec(
+            'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Control\\TimeZoneInformation" /v ActiveTimeBias',
+            $lines,
+            $status
+        );
+        if ($status !== 0) {
+            return null;
+        }
+
+        foreach ($lines as $line) {
+            if (preg_match('/ActiveTimeBias\s+REG_DWORD\s+0x([0-9a-f]+)/i', $line, $match) !== 1) {
+                continue;
+            }
+            $value = (int) hexdec($match[1]);
+            // A signed 32-bit value: 0xfffffe20 is -480 (UTC+08:00).
+            if ($value > 0x7fffffff) {
+                $value -= 0x100000000;
+            }
+            return abs($value) <= 840 ? $value : null;
+        }
+
+        return null;
+    }
+
+    exec('date +%z', $lines, $status);
+    if ($status !== 0 || preg_match('/^([+-])(\d{2})(\d{2})$/', trim($lines[0] ?? ''), $parts) !== 1) {
+        return null;
+    }
+
+    $minutes = (int) $parts[2] * 60 + (int) $parts[3];
+    return $parts[1] === '+' ? -$minutes : $minutes;
+}
+
+/**
+ * Make PHP's own clock agree with that offset, so the log lines below are timed
+ * the same way the text is. `Etc/GMT-8` is UTC+8 (the sign is inverted on
+ * purpose - it is the tz database's convention) and, being a fixed offset, it
+ * cannot go stale at a daylight-saving switch. Offsets that are not a whole hour
+ * have no such zone and keep php.ini's clock; the SMS itself is still right.
+ */
+function notify_match_php_clock(int $offsetMinutes): void
+{
+    $behind = -$offsetMinutes;
+    if ($behind % 60 !== 0) {
+        return;
+    }
+
+    date_default_timezone_set(sprintf(
+        'Etc/GMT%s%d',
+        $behind > 0 ? '-' : '+',
+        intdiv(abs($behind), 60)
+    ));
+}
+
+/** `-480` → `UTC+08:00`: the clock a run is dated by, spelled out. */
+function notify_clock_label(int $offsetMinutes): string
+{
+    $behind = -$offsetMinutes;
+    $size = abs($behind);
+
+    return sprintf('UTC%s%02d:%02d', $behind < 0 ? '-' : '+', intdiv($size, 60), $size % 60);
+}
+
+/**
  * @param  list<string> $argv
  * @return array{dryRun: bool, limit: int, help: bool, error: string}
  */
@@ -125,8 +239,19 @@ function notify_main(array $argv): int
         return 2;
     }
 
-    // Minutes behind UTC, the convention the app's due-date parsing uses.
-    $tzOffsetMinutes = -intdiv((int) date('Z'), 60);
+    // The due times the app prints are read off this clock, so it is settled
+    // before anything is fetched.
+    $clock = notify_clock();
+    notify_match_php_clock($clock['offset']);
+    $tzOffsetMinutes = $clock['offset'];
+
+    if ($options['dryRun']) {
+        notify_log(sprintf(
+            'Clock: %s, read from %s.',
+            notify_clock_label($tzOffsetMinutes),
+            $clock['source']
+        ));
+    }
 
     $lock = fopen(sys_get_temp_dir() . DIRECTORY_SEPARATOR . NOTIFY_LOCK_FILE, 'c');
     if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {

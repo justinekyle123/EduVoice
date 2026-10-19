@@ -83,7 +83,9 @@ export type SynthesizeSpeechInput = {
 /** Request speech and return playable WAV bytes. */
 export async function synthesizeSpeechBytes(
   input: SynthesizeSpeechInput
-): Promise<{ bytes: Buffer; truncated: boolean } | { error: string }> {
+): Promise<
+  { bytes: Buffer; truncated: boolean } | { error: string; quota?: boolean }
+> {
   const text = input.text.trim();
   if (!text) return { error: "Nothing to speak" };
 
@@ -124,6 +126,12 @@ export async function synthesizeSpeechBytes(
     };
   } catch (err) {
     console.error("[tts] Gemini TTS failed:", err);
-    return { error: err instanceof Error ? err.message : "TTS failed" };
+    return {
+      error: err instanceof Error ? err.message : "TTS failed",
+      // A spent quota is reported apart from every other failure so a caller
+      // rendering many passages — a whole quiz, or the phrase bank — can stop at
+      // the first one instead of paying the retry-across-keys delay per line.
+      quota: (err as { kind?: string }).kind === "quota",
+    };
   }
 }

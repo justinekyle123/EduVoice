@@ -5,11 +5,13 @@ import Link from "next/link";
 import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowLeft,
+  ArrowRight,
   Check,
   CircleSlash,
   ClipboardList,
   FileText,
   Loader2,
+  Mic,
   Paperclip,
   RotateCcw,
   Sparkles,
@@ -23,6 +25,9 @@ import {
 } from "@/features/voice-nav/hooks/useVoiceNavCommands";
 import type { PageCommand } from "@/features/voice-nav/context";
 import { getRoomState } from "@/features/rooms/server/actions";
+import { useSpeechRecognition } from "@/features/chat/hooks/useSpeechRecognition";
+import { getSpeechEngine } from "@/features/chat/lib/speechEngine";
+import { VoiceQuizPlayer } from "./VoiceQuizPlayer";
 import {
   generateQuiz,
   generateQuizFromFile,
@@ -47,6 +52,7 @@ function canUseFile(file: File) {
 type AttemptResult = Awaited<ReturnType<typeof submitQuizAttempt>>;
 type RecentQuiz = Awaited<ReturnType<typeof getRecentQuizzes>>[number];
 type RecentAttempt = Awaited<ReturnType<typeof getRecentAttempts>>[number];
+type AudioStatus = "ready" | "quota" | "unavailable";
 
 const QUESTION_LABELS: Record<string, string> = {
   multiple_choice: "Multiple choice",
@@ -78,8 +84,14 @@ export function QuizUI({
   /** A topic to name up front (the progress page's "practise this" link). */
   initialTopic?: string | null;
 }) {
-  const [phase, setPhase] = useState<"lobby" | "taking" | "results">("lobby");
+  const [phase, setPhase] = useState<
+    "lobby" | "choose" | "taking" | "voice" | "results"
+  >("lobby");
   const [roomName, setRoomName] = useState<string | null>(null);
+  // The quiz being taken — a voice attempt needs its id, because that is where
+  // its pre-rendered clips live (see features/quiz/server/quizAudio.ts).
+  const [quizId, setQuizId] = useState<string | null>(null);
+  const [quizTitle, setQuizTitle] = useState("");
 
   const [topic, setTopic] = useState(initialTopic ?? "");
   const [count, setCount] = useState(5);
@@ -88,7 +100,11 @@ export function QuizUI({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [questions, setQuestions] = useState<SafeQuestion[]>([]);
   const [attemptId, setAttemptId] = useState<string | null>(null);
+  const [audioStatus, setAudioStatus] = useState<AudioStatus>("ready");
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  // Manual quiz position. Questions are shown one card at a time, like the
+  // flashcard review, rather than as one long scrolling list.
+  const [current, setCurrent] = useState(0);
   const [result, setResult] = useState<AttemptResult | null>(null);
 
   const [recentQuizzes, setRecentQuizzes] = useState<RecentQuiz[]>([]);
@@ -145,10 +161,13 @@ export function QuizUI({
     (next: { questions: SafeQuestion[]; attemptId: string }) => {
       setQuestions(next.questions);
       setAttemptId(next.attemptId);
+      setAudioStatus((next as { audioStatus?: AudioStatus }).audioStatus ?? "ready");
       setAnswers({});
+      setCurrent(0);
       setResult(null);
       setError(null);
-      setPhase("taking");
+      // A written quiz — or a retake — is offered the same two ways to take it.
+      setPhase("choose");
     },
     []
   );
@@ -160,7 +179,10 @@ export function QuizUI({
     let cancelled = false;
     startQuizAttempt({ quizId: retakeQuizId, roomId })
       .then((opened) => {
-        if (!cancelled) beginAttempt(opened);
+        if (cancelled) return;
+        setQuizId(opened.quiz.id);
+        setQuizTitle(opened.quiz.title);
+        beginAttempt(opened);
       })
       .catch((err) => {
         if (!cancelled) setError(errorMessage(err, "Could not open that quiz"));
@@ -207,6 +229,8 @@ export function QuizUI({
         created = await generateQuiz({ topic, count, roomId });
       }
       setFile(null);
+      setQuizId(created.quiz.id);
+      setQuizTitle(created.quiz.title);
       beginAttempt(created);
     } catch (err) {
       setError(errorMessage(err, "Could not generate a quiz"));
@@ -220,12 +244,16 @@ export function QuizUI({
     void startQuiz();
   }
 
-  async function handleRetake(quizId: string) {
+  // Named `id` rather than `quizId`: the state holding the quiz being taken uses
+  // that name, and a parameter that shadows it reads like a bug.
+  async function handleRetake(id: string) {
     if (busy) return;
     setBusy("start");
     setError(null);
     try {
-      const opened = await startQuizAttempt({ quizId, roomId });
+      const opened = await startQuizAttempt({ quizId: id, roomId });
+      setQuizId(opened.quiz.id);
+      setQuizTitle(opened.quiz.title);
       beginAttempt(opened);
     } catch (err) {
       setError(errorMessage(err, "Could not open that quiz"));
@@ -234,19 +262,18 @@ export function QuizUI({
     }
   }
 
-  async function handleSubmit() {
+  /**
+   * Grade and close the attempt out. Both ways of taking a quiz end here: the
+   * on-screen answers come from `answers`, the voice quiz hands over the answers
+   * it collected out loud, and either list is graded the same way.
+   */
+  async function gradeAttempt(list: { questionId: string; userAnswer: string }[]) {
     if (!attemptId || busy) return;
 
     setBusy("submit");
     setError(null);
     try {
-      const graded = await submitQuizAttempt({
-        attemptId,
-        answers: questions.map((question) => ({
-          questionId: question.id,
-          userAnswer: answers[question.id] ?? "",
-        })),
-      });
+      const graded = await submitQuizAttempt({ attemptId, answers: list });
       setResult(graded);
       setPhase("results");
       await refreshHistory();
@@ -257,9 +284,23 @@ export function QuizUI({
     }
   }
 
+  function handleSubmit() {
+    return gradeAttempt(
+      questions.map((question) => ({
+        questionId: question.id,
+        userAnswer: answers[question.id] ?? "",
+      }))
+    );
+  }
+
   const answeredCount = questions.filter((question) =>
     (answers[question.id] ?? "").trim().length > 0
   ).length;
+
+  // Read only to tell the student, before they pick voice mode, whether this
+  // browser can listen at all; the microphone itself belongs to the player.
+  const { supported: micSupported } = useSpeechRecognition(() => {});
+  const withoutClips = questions.filter((question) => !question.audioFile).length;
 
   // Voice Navigation Mode (feature 6.14): the quiz exposes its own commands so a
   // student can drive it by voice — "start the quiz", "submit answers", "take
@@ -269,6 +310,8 @@ export function QuizUI({
     start: () => {},
     submit: () => {},
     leave: () => {},
+    voice: () => {},
+    manual: () => {},
   });
   useEffect(() => {
     voiceActionsRef.current = {
@@ -277,6 +320,18 @@ export function QuizUI({
       leave: () => {
         setPhase("lobby");
         setResult(null);
+      },
+      // Choosing how to take the quiz only means something on the picker, so a
+      // command heard anywhere else is ignored rather than jumping the student
+      // into a half-open attempt.
+      voice: () => {
+        if (phase !== "choose") return;
+        getSpeechEngine().unlock();
+        setPhase("voice");
+      },
+      manual: () => {
+        if (phase !== "choose") return;
+        setPhase("taking");
       },
     };
   });
@@ -291,6 +346,20 @@ export function QuizUI({
         // of being synthesized (see features/chat/lib/phrases.ts).
         spokenKey: "nav-quiz-start",
         run: () => voiceActionsRef.current.start(),
+      },
+      {
+        id: "quiz-voice",
+        description: "Take the quiz that was just written by voice",
+        phrases: ["voice quiz", "take the voice quiz", "start the voice quiz"],
+        spokenKey: "nav-quiz-voice",
+        run: () => voiceActionsRef.current.voice(),
+      },
+      {
+        id: "quiz-manual",
+        description: "Take the quiz that was just written on screen",
+        phrases: ["manual quiz", "take the manual quiz", "take it on screen"],
+        spokenKey: "nav-quiz-manual",
+        run: () => voiceActionsRef.current.manual(),
       },
       {
         id: "quiz-submit",
@@ -311,25 +380,270 @@ export function QuizUI({
   );
   useVoiceNavCommands("quiz", voiceCommands);
 
+  const selectAnswer = useCallback((questionId: string, value: string) => {
+    setAnswers((prev) => ({ ...prev, [questionId]: value }));
+  }, []);
+
+  // Keyboard shortcuts for the card-at-a-time manual quiz: number keys pick an
+  // option, the arrow keys move between cards, Enter advances. Ignored while the
+  // student is typing into the short-answer field.
+  useEffect(() => {
+    if (phase !== "taking") return;
+
+    function onKey(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) {
+        return;
+      }
+
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        setCurrent((index) => Math.max(0, index - 1));
+        return;
+      }
+      if (event.key === "ArrowRight" || event.key === "Enter") {
+        event.preventDefault();
+        setCurrent((index) => Math.min(questions.length - 1, index + 1));
+        return;
+      }
+
+      const slot = Number(event.key);
+      if (!Number.isInteger(slot) || slot < 1 || slot > 9) return;
+
+      const question = questions[current];
+      const option = (question?.options ?? [])[slot - 1];
+      if (question && option) {
+        event.preventDefault();
+        selectAnswer(question.id, option);
+      }
+    }
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [phase, questions, current, selectAnswer]);
+
+  // -------------------------------------------------------------------------
+  // Choosing how to take it
+  // -------------------------------------------------------------------------
+
+  // Every quiz lands here first — a freshly written one and a retake alike. The
+  // questions are identical either way; which mode to use is a mood, not a
+  // setting, so it is asked every time instead of being remembered.
+  if (phase === "choose") {
+    return (
+      <motion.div
+        key="choose"
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.2 }}
+        className="space-y-4"
+      >
+        <section className={cn(panel, "p-6")}>
+          <p className="text-xs font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+            {questions.length} questions ready
+          </p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+            {quizTitle || "Your quiz"}
+          </h1>
+          <p className="mt-2 max-w-xl text-sm leading-6 text-zinc-600 dark:text-zinc-400">
+            How do you want to take it? Both modes ask the same questions, and the
+            score lands in the same place.
+          </p>
+          {audioStatus === "quota" && (
+            <p className="mt-4 rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30">
+              Question audio could not be pre-generated because voice credits are
+              unavailable. The quiz still works, but some questions may be silent.
+            </p>
+          )}
+          {audioStatus === "unavailable" && (
+            <p className="mt-4 rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30">
+              Some question audio could not be generated. The quiz will use live
+              audio where possible and remains available in manual mode.
+            </p>
+          )}
+
+          <div className="mt-5 grid gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => setPhase("taking")}
+              className={cn(
+                panel,
+                "flex items-start gap-3 p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-lg hover:shadow-brand-950/[0.08] dark:hover:border-brand-500/40"
+              )}
+            >
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                <ClipboardList className="h-5 w-5" />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                  Manual quiz
+                </span>
+                <span className="mt-1 block text-xs leading-5 text-zinc-500 dark:text-zinc-400">
+                  Read the questions and answer on screen — the way a quiz normally
+                  works.
+                </span>
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                // The click is the gesture that lets the browser play audio at all.
+                getSpeechEngine().unlock();
+                setPhase("voice");
+              }}
+              className={cn(
+                panel,
+                "flex items-start gap-3 p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-lg hover:shadow-brand-950/[0.08] dark:hover:border-brand-500/40"
+              )}
+            >
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-100 text-brand-700 dark:bg-brand-500/20 dark:text-brand-300">
+                <Mic className="h-5 w-5" />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                  Voice quiz
+                </span>
+                <span className="mt-1 block text-xs leading-5 text-zinc-500 dark:text-zinc-400">
+                  Hands free: each question is read aloud, you answer out loud, and it
+                  moves on by itself.
+                </span>
+              </span>
+            </button>
+          </div>
+
+          <p className="mt-4 text-xs leading-5 text-zinc-500 dark:text-zinc-400">
+            The questions were recorded when the quiz was written, so a voice quiz —
+            and every repeat — plays them from disk without another text-to-speech
+            request.
+            {withoutClips > 0 &&
+              ` ${withoutClips} of them will be spoken live instead.`}
+          </p>
+
+          {!micSupported && (
+            <p className="mt-3 rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30">
+              This browser cannot listen for speech, so voice mode will ask you to
+              pick your answers instead — the questions are still read aloud.
+            </p>
+          )}
+
+          {error && (
+            <p className="mt-4 rounded-xl bg-red-50 px-3.5 py-2.5 text-sm text-red-600 ring-1 ring-red-100 dark:bg-red-500/10 dark:text-red-400 dark:ring-red-500/30">
+              {error}
+            </p>
+          )}
+
+          <button
+            type="button"
+            onClick={() => {
+              setPhase("lobby");
+              setResult(null);
+            }}
+            className={cn(quietButton, "mt-5")}
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Back to the quiz lobby
+          </button>
+        </section>
+      </motion.div>
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Voice quiz
+  // -------------------------------------------------------------------------
+
+  if (phase === "voice" && quizId) {
+    return (
+      <VoiceQuizPlayer
+        quizId={quizId}
+        quizTitle={quizTitle || "Your quiz"}
+        questions={questions}
+        onFinish={(list) => void gradeAttempt(list)}
+        onLeave={() => setPhase("choose")}
+      />
+    );
+  }
+
   // -------------------------------------------------------------------------
   // Taking
   // -------------------------------------------------------------------------
 
   if (phase === "taking") {
+    const question = questions[current];
+    const questionId = question?.id ?? "";
+    const total = questions.length;
+    const selected = question ? answers[question.id] ?? "" : "";
+    const isFirst = current === 0;
+    const isLast = current >= total - 1;
+    const blanks = questions.filter(
+      (entry) => (answers[entry.id] ?? "").trim().length === 0
+    ).length;
+
+    const goToPrevious = () => setCurrent((index) => Math.max(0, index - 1));
+    const goToNext = () => setCurrent((index) => Math.min(total - 1, index + 1));
+    const goToFirstBlank = () => {
+      const index = questions.findIndex(
+        (entry) => (answers[entry.id] ?? "").trim().length === 0
+      );
+      if (index >= 0) setCurrent(index);
+    };
+
     return (
       <div className="space-y-4">
-        <div className={cn(panel, "flex flex-wrap items-center justify-between gap-3 p-4")}>
-          <button
-            type="button"
-            onClick={() => setPhase("lobby")}
-            className="inline-flex items-center gap-1.5 text-sm font-medium text-zinc-500 transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+        <div className={cn(panel, "p-4")}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setPhase("lobby");
+                setCurrent(0);
+              }}
+              className="inline-flex items-center gap-1.5 text-sm font-medium text-zinc-500 transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Leave quiz
+            </button>
+
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                Question {current + 1} of {total}
+              </span>
+              <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-[11px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                {answeredCount} answered
+              </span>
+            </div>
+          </div>
+
+          {/* One segment per question — answered, current, or still blank.
+              Tapping a segment jumps straight to that question. */}
+          <div
+            className="mt-3 flex items-center gap-1.5"
+            role="group"
+            aria-label="Question progress"
           >
-            <ArrowLeft className="h-4 w-4" />
-            Leave quiz
-          </button>
-          <span className="text-sm text-zinc-500 dark:text-zinc-400">
-            {answeredCount} of {questions.length} answered
-          </span>
+            {questions.map((entry, index) => {
+              const done = (answers[entry.id] ?? "").trim().length > 0;
+              const active = index === current;
+              return (
+                <button
+                  key={entry.id}
+                  type="button"
+                  onClick={() => setCurrent(index)}
+                  aria-label={`Go to question ${index + 1}`}
+                  aria-current={active ? "true" : undefined}
+                  className={cn(
+                    "h-1.5 flex-1 rounded-full transition-all duration-200",
+                    active
+                      ? "bg-brand-500"
+                      : done
+                        ? "bg-brand-300 dark:bg-brand-500/50"
+                        : "bg-zinc-200 hover:bg-zinc-300 dark:bg-zinc-700 dark:hover:bg-zinc-600"
+                  )}
+                />
+              );
+            })}
+          </div>
         </div>
 
         {roomName && (
@@ -339,68 +653,86 @@ export function QuizUI({
           </p>
         )}
 
-        {questions.map((question, index) => (
-          <section key={question.id} className={cn(panel, "p-5")}>
-            <div className="flex items-center gap-2">
-              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-zinc-100 text-[11px] font-bold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-                {index + 1}
+        {/* The card: one question at a time, the way a flashcard shows one front. */}
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.section
+            key={questionId || "no-question"}
+            initial={{ opacity: 0, x: 16 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -16 }}
+            transition={{ duration: 0.18 }}
+            className={cn(panel, "p-6 sm:p-8")}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-brand-700 dark:text-brand-400">
+                {QUESTION_LABELS[question?.type ?? ""] ?? "Question"}
               </span>
-              <span className="text-[11px] font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
-                {QUESTION_LABELS[question.type] ?? question.type}
+              <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
+                {question?.type === "short_answer"
+                  ? "Write it in your own words"
+                  : "Choose one"}
               </span>
             </div>
-            <p className="mt-3 text-sm font-medium leading-6 text-zinc-900 dark:text-zinc-100">
-              {question.question}
+
+            <p className="mt-4 text-lg font-medium leading-8 text-zinc-900 dark:text-zinc-100 sm:text-xl">
+              {question?.question}
             </p>
 
-            {question.type === "short_answer" ? (
+            {question?.type === "short_answer" ? (
               <input
-                value={answers[question.id] ?? ""}
-                onChange={(event) =>
-                  setAnswers((prev) => ({
-                    ...prev,
-                    [question.id]: event.target.value,
-                  }))
-                }
+                value={selected}
+                onChange={(event) => selectAnswer(questionId, event.target.value)}
                 placeholder="Type your answer"
-                className={cn(field, "mt-3")}
+                aria-label="Your answer"
+                className={cn(field, "mt-5 text-base")}
               />
             ) : (
-              <div className="mt-3 space-y-2">
-                {(question.options ?? []).map((option) => {
-                  const selected = answers[question.id] === option;
+              <div className="mt-5 space-y-2.5">
+                {(question?.options ?? []).map((option, index) => {
+                  const isSelected = selected === option;
                   return (
                     <button
                       key={option}
                       type="button"
-                      onClick={() =>
-                        setAnswers((prev) => ({ ...prev, [question.id]: option }))
-                      }
+                      onClick={() => selectAnswer(questionId, option)}
+                      aria-pressed={isSelected}
                       className={cn(
-                        "flex w-full items-center gap-3 rounded-xl border px-3.5 py-2.5 text-left text-sm transition-colors",
-                        selected
-                          ? "border-brand-400 bg-brand-50 text-brand-900 dark:border-brand-500/60 dark:bg-brand-500/10 dark:text-brand-200"
-                          : "border-zinc-200 text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                        "group flex w-full items-center gap-3.5 rounded-2xl border px-4 py-3.5 text-left text-sm transition-all duration-200",
+                        isSelected
+                          ? "border-brand-400 bg-brand-50 ring-1 ring-brand-200 dark:border-brand-500/60 dark:bg-brand-500/10 dark:ring-brand-500/25"
+                          : "border-zinc-200 hover:border-brand-300 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:border-brand-500/40 dark:hover:bg-zinc-800/60"
                       )}
                     >
                       <span
                         className={cn(
-                          "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2",
-                          selected
-                            ? "border-brand-500 bg-brand-500 text-brand-950"
-                            : "border-zinc-300 dark:border-zinc-600"
+                          "flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border text-xs font-bold transition-colors",
+                          isSelected
+                            ? "border-brand-400 bg-brand-400 text-brand-950"
+                            : "border-zinc-200 text-zinc-500 group-hover:border-brand-300 group-hover:text-brand-700 dark:border-zinc-700 dark:text-zinc-400 dark:group-hover:text-brand-300"
                         )}
                       >
-                        {selected && <Check className="h-3 w-3" />}
+                        {String.fromCharCode(65 + index)}
                       </span>
-                      {option}
+                      <span
+                        className={cn(
+                          "min-w-0 flex-1 leading-6",
+                          isSelected
+                            ? "font-medium text-brand-900 dark:text-brand-200"
+                            : "text-zinc-700 dark:text-zinc-300"
+                        )}
+                      >
+                        {option}
+                      </span>
+                      {isSelected && (
+                        <Check className="h-4 w-4 shrink-0 text-brand-600 dark:text-brand-400" />
+                      )}
                     </button>
                   );
                 })}
               </div>
             )}
-          </section>
-        ))}
+          </motion.section>
+        </AnimatePresence>
 
         {error && (
           <p className="rounded-xl bg-red-50 px-3.5 py-2.5 text-sm text-red-600 ring-1 ring-red-100 dark:bg-red-500/10 dark:text-red-400 dark:ring-red-500/30">
@@ -411,21 +743,53 @@ export function QuizUI({
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
-            onClick={handleSubmit}
-            disabled={busy === "submit"}
-            className={primaryButton}
+            onClick={goToPrevious}
+            disabled={isFirst}
+            className={cn(quietButton, isFirst && "cursor-not-allowed opacity-50")}
           >
-            {busy === "submit" ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Check className="h-4 w-4" />
-            )}
-            Submit answers
+            <ArrowLeft className="h-4 w-4" />
+            Previous
           </button>
-          {answeredCount < questions.length && (
-            <span className="text-xs text-zinc-500 dark:text-zinc-400">
-              {questions.length - answeredCount} still blank — blank answers score
-              zero.
+
+          {isLast ? (
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={busy === "submit"}
+              className={primaryButton}
+            >
+              {busy === "submit" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Check className="h-4 w-4" />
+              )}
+              Submit answers
+            </button>
+          ) : (
+            <button type="button" onClick={goToNext} className={primaryButton}>
+              Next
+              <ArrowRight className="h-4 w-4" />
+            </button>
+          )}
+
+          {isLast && blanks > 0 && (
+            <>
+              <button
+                type="button"
+                onClick={goToFirstBlank}
+                className="text-xs font-medium text-brand-700 underline-offset-2 transition-colors hover:underline dark:text-brand-400"
+              >
+                Go to the first blank
+              </button>
+              <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                {blanks} still blank — blank answers score zero.
+              </span>
+            </>
+          )}
+
+          {question && question.type !== "short_answer" && (
+            <span className="hidden text-xs text-zinc-400 dark:text-zinc-500 sm:inline">
+              Number keys pick an answer · ← → move between questions
             </span>
           )}
         </div>
@@ -439,22 +803,58 @@ export function QuizUI({
 
   if (phase === "results" && result) {
     const percent = result.total > 0 ? (result.score / result.total) * 100 : 0;
+    const correctCount = result.results.filter((entry) => entry.isCorrect).length;
+    const wrongCount = Math.max(0, result.total - correctCount);
 
     return (
       <div className="space-y-4">
         <section className={cn(panel, "p-6 text-center")}>
-          <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
-            You scored
-          </p>
-          <p className="mt-1 text-4xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
-            {result.score}
-            <span className="text-2xl text-zinc-400 dark:text-zinc-500">
-              /{result.total}
+          {/* The score as a ring, so the result reads at a glance. */}
+          <div className="relative mx-auto h-36 w-36">
+            <svg viewBox="0 0 120 120" className="h-full w-full -rotate-90">
+              <circle
+                cx="60"
+                cy="60"
+                r="52"
+                pathLength={100}
+                strokeDasharray="100"
+                className="fill-none stroke-zinc-200 dark:stroke-zinc-800"
+                strokeWidth="10"
+              />
+              <motion.circle
+                cx="60"
+                cy="60"
+                r="52"
+                pathLength={100}
+                strokeDasharray="100"
+                initial={{ strokeDashoffset: 100 }}
+                animate={{ strokeDashoffset: 100 - percent }}
+                transition={{ duration: 0.8, ease: "easeOut" }}
+                className="fill-none stroke-brand-500"
+                strokeWidth="10"
+                strokeLinecap="round"
+              />
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
+              <span className="text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+                {Math.round(percent)}%
+              </span>
+              <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                {result.score} of {result.total}
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-1.5">
+            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-500/30">
+              {correctCount} correct
             </span>
-          </p>
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            {Math.round(percent)}% correct
-          </p>
+            {wrongCount > 0 && (
+              <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/30">
+                {wrongCount} to review
+              </span>
+            )}
+          </div>
 
           {result.roomId && (
             <p className="mt-4 inline-flex items-center gap-2 rounded-xl bg-emerald-50 px-3.5 py-2 text-xs text-emerald-700 ring-1 ring-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-500/30">

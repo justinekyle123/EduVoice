@@ -23,6 +23,7 @@ transport:
 | File | What it is |
 | --- | --- |
 | `notify.php` | The cron job. Fetches what is due, sends it, marks it sent. |
+| `notify.cmd` | The Windows wrapper the scheduled task runs, so its command has no nested quoting and every run is logged to `sms/notify.log`. |
 | `send.php` | JSON send endpoint — the app's **Send test text** button posts here. |
 | `serve.php` | Router for PHP's built-in server: serves the entry points, 404s everything else. |
 | `.htaccess` | The same lockdown for Apache/XAMPP. |
@@ -121,25 +122,56 @@ curl -s -X POST http://127.0.0.1:8081/send.php \
 
 ### 5. Schedule it
 
-Every 5 minutes is plenty — a reminder goes out at the task's due time, so the
-worst case is being told five minutes late.
+**Nothing texts anyone until something runs `notify.php` on a timer** — a task
+whose due time arrives simply sits in the queue until a run picks it up. Every
+minute is what this install uses, so the text lands within a minute of the due
+moment; every five (`/MO 5`) is plenty if you would rather it ran less often.
 
-Windows (Task Scheduler; adjust the paths to your install):
+Windows (Task Scheduler; adjust the paths to your install). Schedule the
+`sms/notify.cmd` wrapper rather than `php.exe` itself: it keeps the scheduled
+command to a single path with no nested quoting, and appends whatever a run has
+to say to `sms/notify.log`.
 
 ```bat
-schtasks /Create /TN "EduVoice SMS reminders" /SC MINUTE /MO 5 ^
-  /TR "C:\xampp\php\php.exe C:\Development\EduVoice\sms\notify.php"
+schtasks /Create /TN "EduVoice SMS reminders" /SC MINUTE /MO 1 /F ^
+  /TR "C:\Development\EduVoice\sms\notify.cmd"
 ```
+
+A task created that way only starts on mains power and is killed if the laptop
+unplugs, which would silently drop reminders, so relax both settings:
+
+```powershell
+$s = (Get-ScheduledTask -TaskName "EduVoice SMS reminders").Settings
+$s.DisallowStartIfOnBatteries = $false
+$s.StopIfGoingOnBatteries = $false
+$s.MultipleInstances = "IgnoreNew"
+Set-ScheduledTask -TaskName "EduVoice SMS reminders" -Settings $s
+```
+
+Then you can watch it, pause it, or drop it again:
+
+```bat
+schtasks /Query  /TN "EduVoice SMS reminders" /FO LIST /V
+schtasks /Change /TN "EduVoice SMS reminders" /DISABLE
+schtasks /Change /TN "EduVoice SMS reminders" /ENABLE
+schtasks /Delete /TN "EduVoice SMS reminders" /F
+```
+
+The `Query` output is how you check the timer is alive: **Last Run Time** should
+be within the last minute, and **Last Result** `0` is a clean run.
 
 Linux/macOS (crontab):
 
 ```cron
-*/5 * * * * /usr/bin/php /path/to/EduVoice/sms/notify.php >> /var/log/eduvoice-sms.log 2>&1
+* * * * * /usr/bin/php /path/to/EduVoice/sms/notify.php >> /var/log/eduvoice-sms.log 2>&1
 ```
 
-A quiet run prints nothing and exits `0`; failures print a line and exit `1`, so
-a log or the Task Scheduler history tells you when something broke. Only one run
-happens at a time (a lock file), so an overlap cannot text anyone twice.
+A run with nothing due prints nothing and exits `0`; a run that sends writes
+`SENT …` per text, and a failure writes `FAIL …` or `ERROR …` and exits `1`. On
+Windows all of that goes to `sms/notify.log`. Only one run happens at a time (a
+lock file), so an overlap cannot text anyone twice. The Windows task runs only
+while you are signed in, which is fine: the notifier has no database of its own
+and needs the app reachable at `EDUVOICE_URL` on this machine.
 
 ## What gets sent, and when
 
@@ -149,7 +181,11 @@ happens at a time (a lock file), so an overlap cannot text anyone twice.
 * The app composes the text, e.g.
   `EduVoice: “Review chapter 4” is due now (Oct 16, 5:00 PM). Open EduVoice to tick it off.`
 * The due time is rendered in the clock of the machine running `notify.php`,
-  which is normally the student's own — that is how the due date was set.
+  which is normally the student's own — that is how the due date was set. That
+  clock is read from the machine itself (`ActiveTimeBias` in the registry on
+  Windows, `date +%z` elsewhere), **not** from php.ini: a stock XAMPP ships
+  `date.timezone=Europe/Berlin`, which would put the wrong hour in every text.
+  `NOTIFY_TZ_OFFSET_MINUTES` in `sms/.env` overrides the detection.
 * Anything more than **24 hours** overdue is skipped, so a notifier that was off
   for a few days does not fire off a backlog of stale deadlines. Up to **50**
   reminders go out per run.
@@ -158,6 +194,24 @@ A reminder is only marked as sent *after* the gateway accepts it. If the phone
 was offline or the gateway refused, the task stays queued and the next run tries
 again — which is why the app offers the same task again if the second call ever
 fails (it then logs `WARN … may be sent twice`).
+
+## When no reminder arrives
+
+The test button and the timer are separate paths: the button sends at once, a due
+task waits for the scheduler. So check them in this order.
+
+1. **Is anything queued?** `php sms/notify.php --dry-run` prints the clock it is
+   using and one `DRY …` line per task that is due, sending nothing.
+2. **Is the timer running it?** `schtasks /Query /TN "EduVoice SMS reminders" /FO LIST /V`
+   — a **Last Run Time** older than a minute, or a non-zero **Last Result**, means
+   the task itself is the problem (`267011` only means it has not run yet).
+3. **Did the run complain?** `sms/notify.log` names it: `ERROR … could not reach
+   http://localhost:3000/…` means the app is not running on this machine, and
+   `FAIL …` means the gateway refused the send — that task stays queued, and the
+   next run tries it again.
+4. **Is the task even eligible?** It has to be unticked, carry a due time, belong
+   to a student with a saved mobile number, and be less than 24 hours overdue.
+   Anything older is skipped on purpose, as is anything the phone already got.
 
 ## When the app reports a failure
 

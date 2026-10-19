@@ -37,7 +37,11 @@ import {
   type PhraseLine,
   type VoiceNavKey,
 } from "@/features/chat/lib/phrases";
-import { matchPageCommand, parseVoiceCommand } from "./lib/commands";
+import {
+  detectCommandLanguage,
+  matchPageCommand,
+  parseVoiceCommand,
+} from "./lib/commands";
 import {
   activateTarget,
   collectClickTargets,
@@ -262,13 +266,15 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
    * `data/phrases/` instead, so the confirmation costs no TTS request at all.
    */
   const speakBankLine = useCallback(
-    (line: PhraseLine) => {
+    (line: PhraseLine, lang: DetectedLanguage = languageRef.current) => {
       setFeedback(line.text);
       lastSpokenRef.current = { text: line.text, line };
       speakLine("voice-nav", {
         key: line.key,
         text: line.text,
-        lang: speechLangFor(languageRef.current),
+        // The line's own language, so a Filipino or Cebuano confirmation is not
+        // only written in that language but read in it too.
+        lang: speechLangFor(lang),
         voice: DEFAULT_TTS_VOICE,
         style: line.style,
       });
@@ -276,9 +282,17 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
     [speakLine]
   );
 
-  /** Say one of the fixed voice-navigation lines, by key. */
+  /**
+   * Say one of the fixed voice-navigation lines, by key, in `lang`.
+   *
+   * The language defaults to the one chosen in the panel; `handleCommand` passes
+   * the language of the utterance instead, so answering "tabang" gets Cebuano
+   * even when the panel is still listening in English. A line with no translation
+   * for that language is spoken in English (see localizeLine in lib/phrases.ts).
+   */
   const announceLine = useCallback(
-    (key: VoiceNavKey) => speakBankLine(voiceNavLine(key)),
+    (key: VoiceNavKey, lang: DetectedLanguage = languageRef.current) =>
+      speakBankLine(voiceNavLine(key, lang), lang),
     [speakBankLine]
   );
 
@@ -288,9 +302,13 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
    * line yet falls back to synthesizing its label.
    */
   const announceNav = useCallback(
-    (href: string, label: string) => {
-      const line = navOpenerFor(href);
-      if (line) speakBankLine(line);
+    (
+      href: string,
+      label: string,
+      lang: DetectedLanguage = languageRef.current
+    ) => {
+      const line = navOpenerFor(href, lang);
+      if (line) speakBankLine(line, lang);
       else announce(`Opening ${label}.`);
     },
     [announce, speakBankLine]
@@ -328,10 +346,10 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
   );
 
   const moveCursor = useCallback(
-    (delta: number) => {
+    (delta: number, lang: DetectedLanguage = languageRef.current) => {
       const list = listTargets();
       if (list.length === 0) {
-        announceLine("nav-nothing-to-move");
+        announceLine("nav-nothing-to-move", lang);
         return;
       }
       const current = cursorRef.current;
@@ -349,32 +367,41 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
     [announce, announceLine, listTargets]
   );
 
-  const activateCursor = useCallback(() => {
-    const list = listTargets();
-    const current = cursorRef.current;
-    const target =
-      current !== null ? targetAtIndex(list, current) : list[0] ?? null;
-    if (!target) {
-      announceLine("nav-nothing-to-select");
-      return;
-    }
-    cursorRef.current = target.index;
-    setCursor(target.index);
-    announce(`Opening ${target.label}.`);
-    activateTarget(target);
-  }, [announce, announceLine, listTargets]);
+  const activateCursor = useCallback(
+    (lang: DetectedLanguage = languageRef.current) => {
+      const list = listTargets();
+      const current = cursorRef.current;
+      const target =
+        current !== null ? targetAtIndex(list, current) : list[0] ?? null;
+      if (!target) {
+        announceLine("nav-nothing-to-select", lang);
+        return;
+      }
+      cursorRef.current = target.index;
+      setCursor(target.index);
+      announce(`Opening ${target.label}.`);
+      activateTarget(target);
+    },
+    [announce, announceLine, listTargets]
+  );
 
-  const readPage = useCallback(() => {
-    const main = document.querySelector("main") ?? document.body;
-    const heading = main.querySelector("h1")?.textContent?.replace(/\s+/g, " ").trim();
-    const body = (main.textContent ?? "").replace(/\s+/g, " ").trim();
-    const spoken = [heading ? `${heading}.` : "", body.slice(0, READ_BUDGET)]
-      .filter(Boolean)
-      .join(" ")
-      .trim();
-    if (spoken) announce(spoken);
-    else announceLine("nav-nothing-to-read");
-  }, [announce, announceLine]);
+  const readPage = useCallback(
+    (lang: DetectedLanguage = languageRef.current) => {
+      const main = document.querySelector("main") ?? document.body;
+      const heading = main
+        .querySelector("h1")
+        ?.textContent?.replace(/\s+/g, " ")
+        .trim();
+      const body = (main.textContent ?? "").replace(/\s+/g, " ").trim();
+      const spoken = [heading ? `${heading}.` : "", body.slice(0, READ_BUDGET)]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      if (spoken) announce(spoken);
+      else announceLine("nav-nothing-to-read", lang);
+    },
+    [announce, announceLine]
+  );
 
   // -------------------------------------------------------------------------
   // Steering
@@ -421,6 +448,12 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
       setNotice(null);
       setThinking(true);
 
+      // Answer in the language the student spoke: the utterance's own language
+      // when it is clearly Filipino or Cebuano, and otherwise the one chosen in
+      // the panel. This is what makes "tabang" come back in Cebuano.
+      const replyLang: DetectedLanguage =
+        detectCommandLanguage(text) ?? languageRef.current;
+
       try {
         // 1. Actions the current page registered win on their own screen, so a
         //    quiz can offer "start the quiz" without hijacking "go to the quiz".
@@ -431,8 +464,12 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
           const command = pageList[pageIndex];
           // A page can name a bank line for its confirmation, so a fixed reply
           // like "Starting the quiz." is a recording too.
-          if (command.spokenKey) speakBankLine(voiceNavLine(command.spokenKey));
-          else announce(command.spoken ?? command.description);
+          if (command.spokenKey) {
+            const line = voiceNavLine(command.spokenKey, replyLang);
+            speakBankLine(line, replyLang);
+          } else {
+            announce(command.spoken ?? command.description);
+          }
           await command.run();
           refreshTargets();
           return;
@@ -442,7 +479,7 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
         const parsed = parseVoiceCommand(text);
 
         if (parsed.kind === "navigate") {
-          announceNav(parsed.href, parsed.label);
+          announceNav(parsed.href, parsed.label, replyLang);
           router.push(parsed.href);
           return;
         }
@@ -470,14 +507,14 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
 
         if (parsed.kind === "unknown") {
           setNotice(`I did not catch a command in “${text}”.`);
-          announceLine("nav-no-catch");
+          announceLine("nav-no-catch", replyLang);
           return;
         }
 
         switch (parsed.id) {
           case "help":
             setPanelOpen(true);
-            announceLine("nav-help");
+            announceLine("nav-help", replyLang);
             return;
           case "stop":
             stopSpeaking();
@@ -486,7 +523,7 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
           case "repeat": {
             const last = lastSpokenRef.current;
             if (!last) {
-              announceLine("nav-nothing-to-repeat");
+              announceLine("nav-nothing-to-repeat", replyLang);
               return;
             }
             // A line from the bank is replayed from its recording, so repeating a
@@ -496,39 +533,39 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
             return;
           }
           case "read-page":
-            readPage();
+            readPage(replyLang);
             return;
           case "scroll-up":
             window.scrollBy({ top: -window.innerHeight * SCROLL_STEP, behavior: "smooth" });
-            announceLine("nav-scrolled-up");
+            announceLine("nav-scrolled-up", replyLang);
             return;
           case "scroll-down":
             window.scrollBy({ top: window.innerHeight * SCROLL_STEP, behavior: "smooth" });
-            announceLine("nav-scrolled-down");
+            announceLine("nav-scrolled-down", replyLang);
             return;
           case "scroll-top":
             window.scrollTo({ top: 0, behavior: "smooth" });
-            announceLine("nav-top");
+            announceLine("nav-top", replyLang);
             return;
           case "scroll-bottom":
             window.scrollTo({
               top: document.body.scrollHeight,
               behavior: "smooth",
             });
-            announceLine("nav-bottom");
+            announceLine("nav-bottom", replyLang);
             return;
           case "back":
-            announceLine("nav-back");
+            announceLine("nav-back", replyLang);
             router.back();
             return;
           case "next":
-            moveCursor(1);
+            moveCursor(1, replyLang);
             return;
           case "previous":
-            moveCursor(-1);
+            moveCursor(-1, replyLang);
             return;
           case "activate":
-            activateCursor();
+            activateCursor(replyLang);
             return;
           case "refresh-targets": {
             const list = refreshTargets();

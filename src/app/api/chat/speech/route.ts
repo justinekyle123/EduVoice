@@ -91,7 +91,15 @@ export async function POST(request: Request) {
 
   const result = await synthesizeSpeechBytes({ text, voice, style });
   if ("error" in result) {
-    return NextResponse.json({ error: result.error }, { status: 502 });
+    return NextResponse.json(
+      {
+        error: result.quota
+          ? "Voice credits are currently unavailable"
+          : "Voice audio could not be generated",
+        code: result.quota ? "quota" : "unavailable",
+      },
+      { status: result.quota ? 429 : 502 }
+    );
   }
 
   // Cache only what we actually spoke: a truncated render must not be stored

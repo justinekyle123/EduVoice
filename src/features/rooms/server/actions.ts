@@ -82,13 +82,17 @@ export async function getMyRooms() {
       documentId: studyRooms.documentId,
       createdAt: studyRooms.createdAt,
       role: studyRoomMembers.role,
+      // The outer column is named with its table explicitly: a bare
+      // `${studyRooms.id}` in a select projection renders unqualified (just
+      // "id"), which inside these subqueries binds to the subquery's own id
+      // column and silently matches nothing.
       memberCount: sql<number>`(
         select count(*)::int from ${studyRoomMembers} m
-        where m.room_id = ${studyRooms.id}
+        where m.room_id = ${sql.raw('"study_rooms"."id"')}
       )`,
       lastMessageAt: sql<Date | null>`(
         select max(${roomMessages.createdAt}) from ${roomMessages}
-        where ${roomMessages.roomId} = ${studyRooms.id}
+        where ${roomMessages.roomId} = ${sql.raw('"study_rooms"."id"')}
       )`,
     })
     .from(studyRoomMembers)

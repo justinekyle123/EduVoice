@@ -9,6 +9,9 @@ const pool =
   globalForDb.pool ??
   new Pool({
     connectionString: process.env.DATABASE_URL,
+    connectionTimeoutMillis: 5_000,
+    query_timeout: 10_000,
+    statement_timeout: 10_000,
   });
 
 if (process.env.NODE_ENV !== "production") {
