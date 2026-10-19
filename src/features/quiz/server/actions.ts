@@ -228,6 +228,16 @@ async function createQuiz(input: {
     attemptId: attempt.id,
     provider: generated.provider,
     roomName: room?.name ?? null,
+    // The quiz was just written, so its answers are already in hand. Handing
+    // them over with the quiz is what lets the voice player mark an answer the
+    // instant the student stops talking — no round trip, no second request to
+    // race with the first question.
+    answerKey: inserted.map((row, index) => ({
+      questionId: row.id,
+      type: row.type,
+      correctAnswer: generated.questions[index]?.correctAnswer ?? "",
+      explanation: generated.questions[index]?.explanation ?? null,
+    })),
   };
 }
 
@@ -377,7 +387,28 @@ export async function startQuizAttempt(input: {
     audioStatus: questions.every((question) => question.audioFile)
       ? "ready"
       : "unavailable",
+    // Sent with the quiz so the voice player can grade an answer locally and at
+    // once, exactly like a generated quiz's key.
+    answerKey: await answerKeyFor(quiz.id),
   };
+}
+
+/**
+ * A quiz's answer key, without the ownership check `getQuizAnswerKey` makes —
+ * callers here have already resolved the quiz for this student.
+ */
+async function answerKeyFor(quizId: string): Promise<QuizAnswerKeyEntry[]> {
+  const rows = await db
+    .select({
+      questionId: quizQuestions.id,
+      type: quizQuestions.type,
+      correctAnswer: quizQuestions.correctAnswer,
+      explanation: quizQuestions.explanation,
+    })
+    .from(quizQuestions)
+    .where(eq(quizQuestions.quizId, quizId))
+    .orderBy(asc(quizQuestions.order));
+  return rows as QuizAnswerKeyEntry[];
 }
 
 // ---------------------------------------------------------------------------

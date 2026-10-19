@@ -37,9 +37,9 @@
    then every query scopes by `user_id` (or room membership). A guessed UUID
    never grants access.
 3. **Grading is server-authoritative.** `SafeQuestion` strips `correctAnswer`
-   and `explanation`; the voice player prefetches them once so spoken verdicts
-   are instant, but `submitQuizAttempt` re-grades everything on the server
-   before storing a score.
+   and `explanation` from the question list; the attempt carries them separately
+   as `answerKey` so spoken verdicts are instant, but `submitQuizAttempt`
+   re-grades everything on the server before storing a score.
 4. **Text-to-speech is always server-side Gemini TTS.** `window.speechSynthesis`
    is never used. If TTS fails the reply stays on screen and is simply not
    spoken (`SpeechSnapshot.unavailable`).
@@ -631,24 +631,35 @@ correct answer (for wrong ones) and explanation.
 - The quiz keeps its own recognizer alive: if Chrome ends the session on
   silence, it reopens it. A 10 s silence watchdog uses the same “not heard”
   path as a missed answer, so a deaf microphone can no longer hang question 1.
-- Recognition steps down `ceb-PH → fil-PH → en-PH` when the browser rejects a
-  language; Cebuano is rarely served.
+- Only a **refused** microphone (`not-allowed` / no input device) stops
+  listening. A transient error such as a lost speech-service connection is
+  retried while the question waits — the same behaviour as the study room's
+  quiz — instead of leaving “Listening” on screen with nothing recording.
+- Recognition steps down `ceb-PH → fil-PH → en-PH → en-US` when the browser
+  rejects a language; Cebuano is rarely served, and English is always served.
+- Silence is never graded: the first two misses are re-asked out loud, then the
+  question stays open with a “couldn't hear an answer” nudge, so the student can
+  repeat, tap an option, or skip instead of being marked wrong for audio the
+  microphone never caught.
 - Option cards are buttons and the short-answer field is available while the
   question is read or listening, so a tap is always an escape hatch.
-- The voice player prefetches `getQuizAnswerKey(quizId)` while the intro is
-  playing, then checks each answer locally with the shared `isAnswerCorrect`
-  comparison — no round trip and no "checking" spinner between questions.
+- The answer key travels with the attempt: `startQuizAttempt` and
+  `generateQuiz` return `answerKey` alongside the questions, so the voice player
+  checks each answer locally with the shared `isAnswerCorrect` comparison — no
+  round trip and no "checking" spinner between questions, the same instant
+  verdict the room quiz gives when a player answers.
 - Voice navigation is suspended while the player is mounted, because two
   SpeechRecognition sessions in one tab fight over the same microphone.
 - The spoken answer reveal is optional: the answer is already on screen, so a
   slow synthesis is capped (8 s) and the next question starts without it.
-- If the prefetch failed, it falls back to `gradeQuizAnswer({questionId,
-  userAnswer})`, which verifies ownership and returns `{correct, correctAnswer,
-  explanation}`; it writes nothing.
+- Safety net only: a missing key is fetched with `getQuizAnswerKey(quizId)`,
+  and if that fails the player falls back to `gradeQuizAnswer({questionId,
+  userAnswer})`, which returns `{correct, correctAnswer, explanation}` and
+  writes nothing.
 - The attempt is graded again at the end by `submitQuizAttempt`, so the verdict
   heard and the final score cannot disagree.
 - `startQuizAttempt` is used for retakes; it creates a **new** `quiz_attempts`
-  row and returns the safe questions + audio status.
+  row and returns the safe questions, the audio status and the `answerKey`.
 
 #### 3.6.4 Room-linked quizzes
 

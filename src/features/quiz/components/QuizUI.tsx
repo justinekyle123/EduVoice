@@ -35,6 +35,7 @@ import {
   getRecentQuizzes,
   startQuizAttempt,
   submitQuizAttempt,
+  type QuizAnswerKeyEntry,
 } from "../server/actions";
 
 type SafeQuestion = Awaited<ReturnType<typeof generateQuiz>>["questions"][number];
@@ -99,6 +100,10 @@ export function QuizUI({
   const [file, setFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [questions, setQuestions] = useState<SafeQuestion[]>([]);
+  // The answers come with the attempt (see `startQuizAttempt`), so the voice
+  // player can mark each answer the moment it is spoken instead of asking the
+  // server to check it while the student waits.
+  const [answerKey, setAnswerKey] = useState<QuizAnswerKeyEntry[]>([]);
   const [attemptId, setAttemptId] = useState<string | null>(null);
   const [audioStatus, setAudioStatus] = useState<AudioStatus>("ready");
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -158,8 +163,13 @@ export function QuizUI({
   }, []);
 
   const beginAttempt = useCallback(
-    (next: { questions: SafeQuestion[]; attemptId: string }) => {
+    (next: {
+      questions: SafeQuestion[];
+      attemptId: string;
+      answerKey?: QuizAnswerKeyEntry[];
+    }) => {
       setQuestions(next.questions);
+      setAnswerKey(next.answerKey ?? []);
       setAttemptId(next.attemptId);
       setAudioStatus((next as { audioStatus?: AudioStatus }).audioStatus ?? "ready");
       setAnswers({});
@@ -559,6 +569,7 @@ export function QuizUI({
         quizId={quizId}
         quizTitle={quizTitle || "Your quiz"}
         questions={questions}
+        answerKey={answerKey}
         onFinish={(list) => void gradeAttempt(list)}
         onLeave={() => setPhase("choose")}
       />

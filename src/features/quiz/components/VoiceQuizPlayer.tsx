@@ -28,13 +28,14 @@
 // reporting that. The audio is still Gemini TTS from this app's own route —
 // never the browser's voices.
 //
-// Grading: a question still reaches the client without its answer (see
-// SafeQuestion). The player fetches the quiz's small answer key once, while the
-// intro is playing, and checks each answer locally with the same comparison the
-// server uses — a per-answer round trip left the student looking at "Checking
-// that answer…" between questions. The finished attempt is graded again by
-// `submitQuizAttempt`, which remains the authority for the stored score. If the
-// prefetch failed, the player falls back to `gradeQuizAnswer`.
+// Grading: the answer key travels with the attempt (`startQuizAttempt`,
+// `generateQuiz`), so each answer is checked locally with the same
+// `isAnswerCorrect` comparison the server uses, the instant the student stops
+// talking — the verdict never waits on a round trip, and `"Checking that " +
+// "answer…"` is a stage only an unexpected missing key can reach. The finished
+// attempt is graded again by `submitQuizAttempt`, which remains the authority
+// for the stored score; if the key is somehow absent, the player falls back to
+// `getQuizAnswerKey` and then to `gradeQuizAnswer`.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
@@ -100,11 +101,14 @@ const REVEAL_TIMEOUT_MS = 8_000;
 /**
  * Recognition languages the browser almost never serves, and the closest one it
  * does. A Cebuano question must not leave the microphone asking for "ceb-PH"
- * forever — that is one more way the quiz hears nothing at all.
+ * forever — that is one more way the quiz hears nothing at all. The chain ends at
+ * "en-US", which every recognizer serves, so a rejected locale can never leave
+ * the player saying "Listening" with a microphone that was never opened.
  */
 const LANG_FALLBACK: Record<string, string> = {
   "ceb-PH": "fil-PH",
   "fil-PH": "en-PH",
+  "en-PH": "en-US",
 };
 
 /**
@@ -207,12 +211,15 @@ export function VoiceQuizPlayer({
   quizId,
   quizTitle,
   questions,
+  answerKey,
   onFinish,
   onLeave,
 }: {
   quizId: string;
   quizTitle: string;
   questions: SafeQuestion[];
+  /** The answers, sent with the attempt so a verdict needs no round trip. */
+  answerKey: QuizAnswerKeyEntry[];
   /** Hand the collected answers to the page, which submits and grades them. */
   onFinish: (answers: { questionId: string; userAnswer: string }[]) => void;
   onLeave: () => void;
@@ -225,6 +232,9 @@ export function VoiceQuizPlayer({
   // Typed answer for a short-answer question. It stays available even while the
   // microphone works, so a question can always be answered by hand.
   const [typed, setTyped] = useState("");
+  // A nudge shown when the microphone heard nothing, so the question never
+  // sits on "Listening" looking stuck.
+  const [notice, setNotice] = useState<string | null>(null);
   // A render-safe mirror of which questions have an answer. `answersRef` is the
   // source the flow writes to, but refs must not be read while rendering.
   const [answeredIds, setAnsweredIds] = useState<string[]>([]);
@@ -241,13 +251,15 @@ export function VoiceQuizPlayer({
     cancelled: boolean;
   } | null>(null);
   /**
-   * The quiz's answer key, prefetched while the intro is being read.
+   * The quiz's answer key, handed over with the attempt itself.
    *
-   * Asking the server to judge each answer took long enough to sit on
-   * "Checking that answer…" between questions. The key is fetched once, in
-   * parallel with audio that is playing anyway, and the same `isAnswerCorrect`
-   * comparison gives an instant verdict. `submitQuizAttempt` still grades the
-   * finished attempt on the server, so the stored score never trusts this.
+   * Asking the server to judge each answer is what left the student on
+   * "Checking that answer…" between questions — and a key prefetched in a second
+   * request could still race the first question. The page now receives the key
+   * with the quiz (`startQuizAttempt` / `generateQuiz`), so the same
+   * `isAnswerCorrect` comparison gives the verdict the moment the student stops
+   * talking. `submitQuizAttempt` still grades the finished attempt on the server,
+   * so the stored score never trusts this.
    */
   const answerKeyRef = useRef<Map<string, QuizAnswerKeyEntry>>(new Map());
   const answersRef = useRef<Record<string, string>>({});
@@ -289,11 +301,19 @@ export function VoiceQuizPlayer({
     stageRef.current = stage;
   }, [stage]);
 
+  // Take the key the page handed over with the attempt. It runs before the
+  // first answer can be spoken, so every verdict is local from the start; a
+  // retake that reuses this mounted player replaces it here too.
+  useEffect(() => {
+    if (answerKey.length === 0) return;
+    answerKeyRef.current = new Map(
+      answerKey.map((entry) => [entry.questionId, entry])
+    );
+  }, [answerKey]);
+
   /**
-   * Load the answer key once. It is one small query, and it makes every later
-   * verdict immediate. A failure is harmless: `finishQuestion` falls back to the
-   * per-answer server action, and pressing Start retries the prefetch if it is
-   * still missing.
+   * Safety net for a page that had no key to hand over: one small query, once.
+   * Normally never runs — the key arrives with the attempt.
    */
   const loadAnswerKey = useCallback(async () => {
     try {
@@ -303,13 +323,12 @@ export function VoiceQuizPlayer({
         key.map((entry) => [entry.questionId, entry])
       );
     } catch (err) {
-      console.warn("[voice-quiz] could not prefetch the answer key:", err);
+      console.warn("[voice-quiz] could not load the answer key:", err);
     }
   }, [quizId]);
 
-  // Fetch it now, while the student is still on the intro or the first question.
   useEffect(() => {
-    void loadAnswerKey();
+    if (answerKeyRef.current.size === 0) void loadAnswerKey();
   }, [loadAnswerKey]);
 
   // Voice navigation listens continuously on this page. Chrome has one speech
@@ -490,6 +509,7 @@ export function VoiceQuizPlayer({
     setHeard("");
     setTyped("");
     setFeedback(null);
+    setNotice(null);
     // A recognition error belongs to the question that produced it; the next
     // question gets a fresh attempt with the microphone. The buffer is cleared
     // too: otherwise an interim answer that was judged without a final result
@@ -651,7 +671,7 @@ export function VoiceQuizPlayer({
     const isChoice = current.type !== "short_answer";
     const usable = text.length > 0 && (!isChoice || resolved.source !== "verbatim");
 
-    if (!usable && !options?.force && missesRef.current < MISS_LIMIT) {
+    if (!usable && !options?.force) {
       missesRef.current += 1;
       draftRef.current = "";
       setHeard("");
@@ -660,6 +680,17 @@ export function VoiceQuizPlayer({
       // cleared too, so a transient recognition failure gets another attempt.
       clearMicInterimRef.current();
       clearMicErrorRef.current();
+
+      // Silence is not a wrong answer. The first misses are re-asked out loud;
+      // past the limit the question stays open with a visible nudge, so the
+      // student can repeat, tap an option, or skip — the room quiz waits the
+      // same way instead of marking what it never heard.
+      if (missesRef.current > MISS_LIMIT) {
+        setNotice("I couldn't hear an answer — say it again, or tap an option.");
+        setStage("listening");
+        return;
+      }
+
       const line = quizLine("quiz-not-heard");
       setStage("asking");
       void playLine({ key: "quiz-not-heard", text: line.text }, () =>
@@ -812,17 +843,19 @@ export function VoiceQuizPlayer({
 
   const questionText = question?.question ?? "";
 
-  // The browser refused the question's own language and it is already the
-  // English fallback: there is nothing left to step down to.
-  const languageUnavailable =
-    recognitionError?.code === "language-not-supported" &&
-    speechLangFor(detectLanguage(questionText)) === "en-PH";
-  // A connection or service error also leaves the mic silent. Rather than loop
-  // restarting it, let the student tap or type the answer.
-  const recognitionFailed =
+  /**
+   * Only a microphone the browser refused stops listening for good.
+   *
+   * Everything else — a lost connection, a locale the service does not serve —
+   * is retried while the question waits, which is what the study room's quiz
+   * does. Treating one transient "network" error as fatal is what left this
+   * player showing "Listening" with a microphone that had stopped recording:
+   * the student said the answer and nothing ever arrived.
+   */
+  const canListen = supported && !blocked;
+  // Worth saying out loud: the next answer may not be heard.
+  const recognitionTrouble =
     recognitionError !== null && recognitionError.code !== "language-not-supported";
-  const canListen =
-    supported && !blocked && !languageUnavailable && !recognitionFailed;
 
   /** The mic is open only while a question is actually waiting for an answer. */
   useEffect(() => {
@@ -1167,6 +1200,19 @@ export function VoiceQuizPlayer({
                 {blocked
                   ? "The browser refused the microphone — allow it, or tap the correct option above."
                   : "This browser can't listen for speech — tap the correct option above, or type a short answer."}
+              </p>
+            )}
+
+            {canListen && recognitionTrouble && !feedback && (
+              <p className="mt-4 rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30">
+                Voice input is having trouble — say the answer again, or tap an
+                option above.
+              </p>
+            )}
+
+            {notice && !feedback && (
+              <p className="mt-4 rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30">
+                {notice}
               </p>
             )}
 
