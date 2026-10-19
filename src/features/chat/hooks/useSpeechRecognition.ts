@@ -7,6 +7,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { getSpeechEngine } from "../lib/speechEngine";
 
 type RecognitionResult = {
   results: ArrayLike<{ 0: { transcript: string }; isFinal: boolean }>;
@@ -78,7 +79,25 @@ export type SpeechRecognitionOptions = {
    * of a long question silently disappears.
    */
   keepInterim?: boolean;
+  /**
+   * Keep listening while EduVoice's own voice is playing.
+   *
+   * Off by default. Speech recognition captures the microphone, and the
+   * microphone captures the speakers — so a tutor answer played aloud comes
+   * straight back as words, which would otherwise be typed into the student's
+   * input as if they had said them. Turning this on is only for callers that
+   * need to hear something *over* the tutor (voice mode and voice navigation
+   * listen for "stop" while it speaks); they filter the echo themselves.
+   */
+  listenWhileSpeaking?: boolean;
 };
+
+/**
+ * Ignore results for this long after the tutor stops. The browser finalizes an
+ * utterance on the silence just after a clip ends, so waiting only for
+ * `isSpeaking()` to turn false would still type the tutor's last words.
+ */
+const SPEECH_ECHO_GUARD_MS = 1200;
 
 const emptySubscribe = () => () => {};
 
@@ -106,6 +125,12 @@ function join(...parts: string[]): string {
  * has not committed to yet — which is what lets a caller act before the browser
  * has decided the speaker is finished (voice navigation dispatches a command the
  * moment it is complete; see features/voice-nav/context.tsx).
+ *
+ * The microphone also hears the laptop's speakers. By default every result heard
+ * while the tutor is talking (and for a short tail afterwards) is discarded, so
+ * a reply played aloud never types itself into the student's input. Callers that
+ * genuinely must listen over the tutor — voice mode and voice navigation waiting
+ * for "stop" — pass `listenWhileSpeaking` and filter the echo themselves.
  */
 export function useSpeechRecognition(
   onTranscript: (finalText: string, interimText: string) => void,
@@ -124,6 +149,7 @@ export function useSpeechRecognition(
   const committedRef = useRef("");
   const liveInterimRef = useRef("");
   const keepInterimRef = useRef(false);
+  const listenWhileSpeakingRef = useRef(false);
 
   useEffect(() => {
     callbackRef.current = onTranscript;
@@ -160,6 +186,7 @@ export function useSpeechRecognition(
       const Ctor = getRecorderCtor();
       if (!Ctor) return;
       keepInterimRef.current = options.keepInterim ?? false;
+      listenWhileSpeakingRef.current = options.listenWhileSpeaking ?? false;
       if (!keepInterimRef.current) clearInterim();
       recorderRef.current?.abort();
 
@@ -178,6 +205,21 @@ export function useSpeechRecognition(
         // Ignore callbacks from a recorder that was replaced or aborted. This
         // prevents an old browser session from ending a newly started turn.
         if (recorderRef.current !== recorder) return;
+
+        // The microphone also hears the speakers. Unless this caller is
+        // deliberately listening for a stop word over the tutor, drop anything
+        // heard while the tutor is talking (and the utterance the browser
+        // finalizes in the moment just after it stops) instead of typing the
+        // tutor's answer into the student's input.
+        if (
+          !listenWhileSpeakingRef.current &&
+          getSpeechEngine().isSpeakingOrRecently(SPEECH_ECHO_GUARD_MS)
+        ) {
+          committedRef.current = "";
+          liveInterimRef.current = "";
+          setInterim("");
+          return;
+        }
 
         setBlocked(false);
         setError(null);
@@ -285,6 +327,13 @@ export function useSpeechRecognition(
     setListening(false);
   }, []);
 
+  /**
+   * Drop a reported error without starting a session. A caller that moves on to
+   * a new question uses this so one stale "language-not-supported" or network
+   * error cannot keep the microphone closed for the rest of the quiz.
+   */
+  const clearError = useCallback(() => setError(null), []);
+
   return {
     supported,
     listening,
@@ -295,6 +344,7 @@ export function useSpeechRecognition(
     start,
     stop,
     abort,
+    clearError,
     clearInterim,
     getInterim,
   };

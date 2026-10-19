@@ -28,11 +28,15 @@
 // reporting that. The audio is still Gemini TTS from this app's own route —
 // never the browser's voices.
 //
-// Answers are not graded in the browser: a question reaches the client without
-// its answer (see SafeQuestion), so each one is judged by the server
-// (`gradeQuizAnswer`) and the attempt is graded again on submit.
+// Grading: a question still reaches the client without its answer (see
+// SafeQuestion). The player fetches the quiz's small answer key once, while the
+// intro is playing, and checks each answer locally with the same comparison the
+// server uses — a per-answer round trip left the student looking at "Checking
+// that answer…" between questions. The finished attempt is graded again by
+// `submitQuizAttempt`, which remains the authority for the stored score. If the
+// prefetch failed, the player falls back to `gradeQuizAnswer`.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
 import {
   ArrowLeft,
@@ -43,7 +47,6 @@ import {
   Play,
   Repeat,
   SkipForward,
-  Volume2,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -59,17 +62,50 @@ import {
   normalizeSpeech,
   resolveSpokenAnswer,
 } from "@/features/rooms/lib/voiceAnswer";
+import { useVoiceNav } from "@/features/voice-nav/context";
+import { MicOrb } from "./MicOrb";
+import { isAnswerCorrect } from "../lib/grading";
 import { answerReveal, optionLetter, questionNarration } from "../lib/narration";
-import { gradeQuizAnswer, type SafeQuestion } from "../server/actions";
+import {
+  getQuizAnswerKey,
+  gradeQuizAnswer,
+  type QuizAnswerKeyEntry,
+  type SafeQuestion,
+} from "../server/actions";
 
 /** Quiet time after the last recognised word before the answer is judged. */
 const AUTO_SUBMIT_MS = 900;
 /** Do not leave the voice flow stuck when the server or database is unavailable. */
-const ANSWER_CHECK_TIMEOUT_MS = 10_000;
+const ANSWER_CHECK_TIMEOUT_MS = 8_000;
 /** How many times a question is asked again when nothing usable was heard. */
 const MISS_LIMIT = 2;
 /** Ceiling on one question's read-aloud, in case a clip never reports its end. */
 const QUESTION_CAP_MS = 45_000;
+/**
+ * Silence allowed while the mic is open. Without this, a recognizer that opens
+ * but never returns a word leaves the quiz on the question forever; the same
+ * "I did not catch that" path as a misheard answer is used instead.
+ */
+const LISTEN_WATCHDOG_MS = 10_000;
+/** A live synthesis that never comes back must not hold the quiz. */
+const SPEECH_REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * The spoken answer reveal is optional: the answer is already on screen and the
+ * verdict has been said. Waiting the full synthesis timeout before the next
+ * question made a wrong answer feel like a freeze, so the quiz moves on without
+ * the line if it is still rendering.
+ */
+const REVEAL_TIMEOUT_MS = 8_000;
+
+/**
+ * Recognition languages the browser almost never serves, and the closest one it
+ * does. A Cebuano question must not leave the microphone asking for "ceb-PH"
+ * forever — that is one more way the quiz hears nothing at all.
+ */
+const LANG_FALLBACK: Record<string, string> = {
+  "ceb-PH": "fil-PH",
+  "fil-PH": "en-PH",
+};
 
 /**
  * Words a student says *to* the quiz rather than in answer to it. Matched as a
@@ -83,6 +119,8 @@ const REPEAT_WORDS = [
   "say that again",
   "again",
   "ulit",
+  "ulita",
+  "usba",
   "ulitin",
   "balik",
 ];
@@ -149,7 +187,7 @@ const STAGE_VIEW: Record<Stage, { label: string; hint: string }> = {
   },
   listening: {
     label: "Listening",
-    hint: "Say the letter of your answer, or say it in full, then pause.",
+    hint: "Say the letter or the words, then pause — or tap an option.",
   },
   judging: {
     label: "Checking that answer…",
@@ -164,72 +202,6 @@ const STAGE_VIEW: Record<Stage, { label: string; hint: string }> = {
     hint: "Adding up your score.",
   },
 };
-
-/**
- * The voice counterpart of a flashcard's front: a single round indicator that
- * says, without words, whether the quiz is speaking, listening, thinking, or
- * done. It pulses only while the microphone is actually open.
- */
-function MicOrb({ stage, correct }: { stage: Stage; correct: boolean | null }) {
-  const pulsing = stage === "listening";
-  const tone =
-    stage === "verdict"
-      ? correct
-        ? "bg-gradient-to-br from-emerald-400 to-emerald-500 text-emerald-950 shadow-emerald-500/30"
-        : "bg-gradient-to-br from-red-400 to-red-500 text-red-950 shadow-red-500/30"
-      : pulsing || stage === "asking"
-        ? "bg-gradient-to-br from-brand-400 to-brand-500 text-brand-950 shadow-brand-500/30"
-        : "bg-zinc-100 text-zinc-400 shadow-zinc-900/5 dark:bg-zinc-800 dark:text-zinc-500";
-
-  const icon =
-    stage === "listening" ? (
-      <Mic className="h-7 w-7" />
-    ) : stage === "judging" ? (
-      <Loader2 className="h-7 w-7 animate-spin" />
-    ) : stage === "verdict" ? (
-      correct ? (
-        <Check className="h-7 w-7" />
-      ) : (
-        <X className="h-7 w-7" />
-      )
-    ) : stage === "finished" ? (
-      <Check className="h-7 w-7" />
-    ) : (
-      <Volume2 className="h-7 w-7" />
-    );
-
-  return (
-    <span className="relative flex h-20 w-20 items-center justify-center">
-      {pulsing && (
-        <>
-          <motion.span
-            className="absolute inset-0 rounded-full bg-brand-400/30"
-            animate={{ scale: [1, 1.35, 1], opacity: [0.45, 0.05, 0.45] }}
-            transition={{ duration: 1.8, repeat: Infinity, ease: "easeOut" }}
-          />
-          <motion.span
-            className="absolute inset-0 rounded-full bg-brand-400/20"
-            animate={{ scale: [1, 1.55, 1], opacity: [0.35, 0, 0.35] }}
-            transition={{
-              duration: 1.8,
-              repeat: Infinity,
-              ease: "easeOut",
-              delay: 0.4,
-            }}
-          />
-        </>
-      )}
-      <span
-        className={cn(
-          "relative flex h-16 w-16 items-center justify-center rounded-full shadow-lg transition-colors duration-300",
-          tone
-        )}
-      >
-        {icon}
-      </span>
-    </span>
-  );
-}
 
 export function VoiceQuizPlayer({
   quizId,
@@ -250,20 +222,49 @@ export function VoiceQuizPlayer({
   const [heard, setHeard] = useState("");
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Typed fallback, used only on a short-answer question when the browser cannot
-  // listen — otherwise there would be no way to answer it at all.
+  // Typed answer for a short-answer question. It stays available even while the
+  // microphone works, so a question can always be answered by hand.
   const [typed, setTyped] = useState("");
+  // A render-safe mirror of which questions have an answer. `answersRef` is the
+  // source the flow writes to, but refs must not be read while rendering.
+  const [answeredIds, setAnsweredIds] = useState<string[]>([]);
+  // Bumped to reopen the mic after Chrome closes a recognition session on its
+  // own. Without it the quiz still says "Listening" while nothing is recording.
+  const [micSession, setMicSession] = useState(0);
 
   const lineRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
+  // A live synthesis still in flight when the student taps an answer or leaves.
+  // `cancelled` separates that deliberate stop from the timeout abort below.
+  const synthesisRef = useRef<{
+    controller: AbortController;
+    cancelled: boolean;
+  } | null>(null);
+  /**
+   * The quiz's answer key, prefetched while the intro is being read.
+   *
+   * Asking the server to judge each answer took long enough to sit on
+   * "Checking that answer…" between questions. The key is fetched once, in
+   * parallel with audio that is playing anyway, and the same `isAnswerCorrect`
+   * comparison gives an instant verdict. `submitQuizAttempt` still grades the
+   * finished attempt on the server, so the stored score never trusts this.
+   */
+  const answerKeyRef = useRef<Map<string, QuizAnswerKeyEntry>>(new Map());
   const answersRef = useRef<Record<string, string>>({});
   const missesRef = useRef(0);
   const draftRef = useRef("");
   const quietRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const capRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const indexRef = useRef(0);
   const stageRef = useRef<Stage>("ready");
   const leftRef = useRef(false);
+  /**
+   * The recognition language last tried for a question. Kept across restarts so a
+   * rejected Cebuano/Filipino question settles on a language the browser serves
+   * instead of cycling back to the one it just refused.
+   */
+  const micLangRef = useRef<{ question: string; lang: string } | null>(null);
   const lastVerdictRef = useRef<QuizLineKey | null>(null);
   // The microphone lives in the hook below, which is declared after the flow that
   // uses it; this ref is how the flow reaches it without a circular declaration.
@@ -271,12 +272,15 @@ export function VoiceQuizPlayer({
     abort: () => {},
     getInterim: () => "",
   });
+  // The silence watchdog outlives one render, so it reaches the latest `judge`
+  // through a ref instead of capturing the first one.
+  const judgeRef = useRef<(spoken: string) => void>(() => {});
+  const clearMicErrorRef = useRef<() => void>(() => {});
+  const clearMicInterimRef = useRef<() => void>(() => {});
 
   const question = questions[index];
   const total = questions.length;
-  // Read straight off the ref: every recorded answer also moves the stage, so a
-  // render always follows a change here.
-  const answeredCount = Object.keys(answersRef.current).length;
+  const answeredCount = answeredIds.length;
 
   useEffect(() => {
     indexRef.current = index;
@@ -284,6 +288,39 @@ export function VoiceQuizPlayer({
   useEffect(() => {
     stageRef.current = stage;
   }, [stage]);
+
+  /**
+   * Load the answer key once. It is one small query, and it makes every later
+   * verdict immediate. A failure is harmless: `finishQuestion` falls back to the
+   * per-answer server action, and pressing Start retries the prefetch if it is
+   * still missing.
+   */
+  const loadAnswerKey = useCallback(async () => {
+    try {
+      const key = await getQuizAnswerKey(quizId);
+      if (leftRef.current) return;
+      answerKeyRef.current = new Map(
+        key.map((entry) => [entry.questionId, entry])
+      );
+    } catch (err) {
+      console.warn("[voice-quiz] could not prefetch the answer key:", err);
+    }
+  }, [quizId]);
+
+  // Fetch it now, while the student is still on the intro or the first question.
+  useEffect(() => {
+    void loadAnswerKey();
+  }, [loadAnswerKey]);
+
+  // Voice navigation listens continuously on this page. Chrome has one speech
+  // recognition input per tab, so leaving it running starves the quiz's own
+  // recognizer — the student answers and nothing is heard. Pause it while the
+  // voice quiz is mounted; its preference is untouched and it resumes on leave.
+  const { suspendListening, resumeListening } = useVoiceNav();
+  useEffect(() => {
+    suspendListening();
+    return () => resumeListening();
+  }, [suspendListening, resumeListening]);
 
   // ------------------------------------------------------------------ audio --
 
@@ -296,9 +333,33 @@ export function VoiceQuizPlayer({
       clearTimeout(capRef.current);
       capRef.current = null;
     }
+    if (watchdogRef.current) {
+      clearTimeout(watchdogRef.current);
+      watchdogRef.current = null;
+    }
   };
 
+  /**
+   * Re-arm the silence watchdog for the current listening window. Every word
+   * restarts it, so it only fires when the student has genuinely said nothing.
+   */
+  const armWatchdog = useCallback(() => {
+    if (watchdogRef.current) clearTimeout(watchdogRef.current);
+    watchdogRef.current = setTimeout(() => {
+      watchdogRef.current = null;
+      if (stageRef.current !== "listening") return;
+      judgeRef.current("");
+    }, LISTEN_WATCHDOG_MS);
+  }, []);
+
   const stopLine = () => {
+    // A queued synthesis would otherwise play over the verdict or the next page.
+    const pending = synthesisRef.current;
+    if (pending) {
+      pending.cancelled = true;
+      pending.controller.abort();
+    }
+    synthesisRef.current = null;
     const line = lineRef.current;
     if (line) {
       line.onended = null;
@@ -320,7 +381,11 @@ export function VoiceQuizPlayer({
    * wait for audio that is not coming. `next` is a plain callback, so the flow is
    * driven by playback rather than by watching state.
    */
-  async function playLine(source: LineSource, next: () => void) {
+  async function playLine(
+    source: LineSource,
+    next: () => void,
+    options?: { timeoutMs?: number }
+  ) {
     stopLine();
     clearTimers();
 
@@ -331,14 +396,16 @@ export function VoiceQuizPlayer({
       // A bank line is a file when the bank has been generated, and is
       // synthesized under the same key the first time if it has not.
       url = `/api/chat/speech/${source.key}`;
-      return playUrl(url, next, () => void playByText(source.text, next));
+      return playUrl(url, next, () =>
+        void playByText(source.text, next, options?.timeoutMs)
+      );
     } else {
-      return playByText(source.text, next);
+      return playByText(source.text, next, options?.timeoutMs);
     }
 
     return playUrl(url, next, () => {
       if ("fallbackText" in source && source.fallbackText) {
-        void playByText(source.fallbackText, next);
+        void playByText(source.fallbackText, next, options?.timeoutMs);
         return;
       }
       next();
@@ -346,12 +413,23 @@ export function VoiceQuizPlayer({
   }
 
   /** Synthesize (or replay from the server's cache) and then play. */
-  async function playByText(text: string, next: () => void) {
+  async function playByText(
+    text: string,
+    next: () => void,
+    timeoutMs = SPEECH_REQUEST_TIMEOUT_MS
+  ) {
+    // A synthesis request may be slow on the free TTS tier. Cap it, and move on
+    // without the line rather than leaving the quiz looking frozen.
+    const controller = new AbortController();
+    const entry = { controller, cancelled: false };
+    synthesisRef.current = entry;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetch("/api/chat/speech", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
+        signal: controller.signal,
       });
       if (!res.ok) {
         const payload = (await res.json().catch(() => null)) as {
@@ -368,8 +446,14 @@ export function VoiceQuizPlayer({
       objectUrlRef.current = url;
       return playUrl(url, next, () => next());
     } catch {
+      // A line stopped by `stopLine` was cancelled on purpose: do not report it
+      // and do not continue the flow it belonged to. A timeout still moves on.
+      if (entry.cancelled) return;
       setError("Voice audio could not be reached. You can continue the quiz manually.");
       return next();
+    } finally {
+      clearTimeout(timer);
+      if (synthesisRef.current === entry) synthesisRef.current = null;
     }
   }
 
@@ -406,6 +490,12 @@ export function VoiceQuizPlayer({
     setHeard("");
     setTyped("");
     setFeedback(null);
+    // A recognition error belongs to the question that produced it; the next
+    // question gets a fresh attempt with the microphone. The buffer is cleared
+    // too: otherwise an interim answer that was judged without a final result
+    // would still be read as this new question's answer by the watchdog.
+    clearMicErrorRef.current();
+    clearMicInterimRef.current();
     setStage("asking");
 
     const spoken = questionNarration(current, indexRef.current + 1, total);
@@ -457,27 +547,52 @@ export function VoiceQuizPlayer({
 
   /** Record an answer, say how it went, then move on. */
   async function finishQuestion(current: SafeQuestion, answer: string, heardText: string) {
+    if (leftRef.current) return;
     answersRef.current[current.id] = answer;
-    setStage("judging");
+    setAnsweredIds((ids) =>
+      ids.includes(current.id) ? ids : [...ids, current.id]
+    );
 
-    let verdict: Awaited<ReturnType<typeof gradeQuizAnswer>>;
-    try {
-      verdict = await Promise.race([
-        gradeQuizAnswer({ questionId: current.id, userAnswer: answer }),
-        new Promise<never>((_, reject) => {
-          setTimeout(
-            () => reject(new Error("Answer checking timed out. Moving on.")),
-            ANSWER_CHECK_TIMEOUT_MS
-          );
-        }),
-      ]);
-    } catch (err) {
-      // Nothing honest to say without a verdict, so the quiz reports it and
-      // carries on instead of inventing feedback.
-      setError(err instanceof Error ? err.message : "Could not grade that answer");
-      setStage("verdict");
-      void playLine({ text: "Moving on." }, advance);
-      return;
+    // The prefetched key is the fast path: no round trip, so the verdict is
+    // ready in the same render and the "checking" spinner never appears.
+    const prefetched = answerKeyRef.current.get(current.id);
+    let verdict: {
+      correct: boolean;
+      correctAnswer: string;
+      explanation: string | null;
+    };
+
+    if (prefetched) {
+      verdict = {
+        correct: isAnswerCorrect(
+          prefetched.type,
+          prefetched.correctAnswer,
+          answer
+        ),
+        correctAnswer: prefetched.correctAnswer,
+        explanation: prefetched.explanation,
+      };
+    } else {
+      setStage("judging");
+      try {
+        verdict = await Promise.race([
+          gradeQuizAnswer({ questionId: current.id, userAnswer: answer }),
+          new Promise<never>((_, reject) => {
+            setTimeout(
+              () => reject(new Error("Answer checking timed out. Moving on.")),
+              ANSWER_CHECK_TIMEOUT_MS
+            );
+          }),
+        ]);
+      } catch (err) {
+        // Nothing honest to say without a verdict, so the quiz reports it and
+        // carries on instead of inventing feedback.
+        setError(err instanceof Error ? err.message : "Could not grade that answer");
+        setStage("verdict");
+        const line = quizLine("quiz-move-on");
+        void playLine({ key: "quiz-move-on", text: line.text }, advance);
+        return;
+      }
     }
     if (leftRef.current) return;
 
@@ -501,18 +616,29 @@ export function VoiceQuizPlayer({
         advance();
         return;
       }
-      void playLine({ text: answerReveal(current, verdict.correctAnswer) }, advance);
+      void playLine(
+        { text: answerReveal(current, verdict.correctAnswer) },
+        advance,
+        { timeoutMs: REVEAL_TIMEOUT_MS }
+      );
     });
   }
 
-  /** Judge what was said, or ask again when nothing usable came through. */
-  async function judge(spoken: string) {
+  /**
+   * Judge what was said, or ask again when nothing usable came through.
+   * `force` is for a deliberate skip: it records the empty answer and moves on
+   * instead of spending the two "I did not catch that" re-asks on it.
+   */
+  async function judge(spoken: string, options?: { force?: boolean }) {
     const current = questions[indexRef.current];
     if (!current || stageRef.current !== "listening") return;
 
     clearTimers();
     micRef.current.abort();
-    setStage("judging");
+
+    // `finishQuestion` only enters "judging" when it actually has to ask the
+    // server. With the prefetched key the verdict replaces this stage in the
+    // same update, so the spinner never appears.
 
     // Include the words the browser has heard but not yet committed: a student
     // who pauses mid-sentence should not lose the second half of it.
@@ -525,10 +651,15 @@ export function VoiceQuizPlayer({
     const isChoice = current.type !== "short_answer";
     const usable = text.length > 0 && (!isChoice || resolved.source !== "verbatim");
 
-    if (!usable && missesRef.current < MISS_LIMIT) {
+    if (!usable && !options?.force && missesRef.current < MISS_LIMIT) {
       missesRef.current += 1;
       draftRef.current = "";
       setHeard("");
+      // The re-ask starts a fresh listen: keeping the words that were just
+      // judged unusable would prepend them to the next answer. The error is
+      // cleared too, so a transient recognition failure gets another attempt.
+      clearMicInterimRef.current();
+      clearMicErrorRef.current();
       const line = quizLine("quiz-not-heard");
       setStage("asking");
       void playLine({ key: "quiz-not-heard", text: line.text }, () =>
@@ -538,6 +669,71 @@ export function VoiceQuizPlayer({
     }
 
     await finishQuestion(current, usable ? resolved.answer : "", text);
+  }
+
+  // No dependency array: `judge` closes over the current question and refs, so
+  // the watchdog must always call this render's version.
+  useEffect(() => {
+    judgeRef.current = judge;
+  });
+
+  /**
+   * Answer without the microphone: a tap on an option or a typed short answer.
+   *
+   * The voice quiz used to offer this only after the recognizer was known to be
+   * dead. A microphone that opens but never returns words is indistinguishable
+   * from one that works, so the student was left on question one with no way to
+   * answer. Clicking always wins: it stops the question clip and any pending
+   * listen before grading.
+   */
+  function answerByHand(answer: string) {
+    if (stageRef.current !== "listening" && stageRef.current !== "asking") return;
+    const current = questions[indexRef.current];
+    if (!current) return;
+    clearTimers();
+    micRef.current.abort();
+    stopLine();
+    void finishQuestion(current, answer, answer);
+  }
+
+  /**
+   * The browser has heard words but has not committed to them yet.
+   *
+   * Waiting only for a final result is what left the voice quiz stuck on the
+   * first question: Chrome can keep a short answer as an interim result, so no
+   * timer ever started and the mic stayed open forever. Treat the interim words
+   * as an answer too — the same quiet window after the last one decides when to
+   * judge. Commands work the moment they are heard.
+   */
+  function handleInterimSpoken(interimText: string) {
+    if (stageRef.current !== "listening") return;
+    const trimmed = interimText.trim();
+    if (!trimmed) return;
+
+    if (isCommand(trimmed, REPEAT_WORDS)) {
+      replay();
+      return;
+    }
+    if (isCommand(trimmed, STOP_WORDS)) {
+      leave();
+      return;
+    }
+    if (isCommand(trimmed, SKIP_WORDS)) {
+      void judge("", { force: true });
+      return;
+    }
+
+    // Show the words immediately; `judge` reads the live interim text too, so
+    // nothing is lost if no final result ever arrives.
+    setHeard(
+      `${draftRef.current} ${trimmed}`.replace(/\s+/g, " ").trim()
+    );
+    armWatchdog();
+    if (quietRef.current) clearTimeout(quietRef.current);
+    quietRef.current = setTimeout(
+      () => void judge(draftRef.current),
+      AUTO_SUBMIT_MS
+    );
   }
 
   /** The student stopped talking: give them a beat, then judge. */
@@ -556,12 +752,13 @@ export function VoiceQuizPlayer({
       return;
     }
     if (isCommand(trimmed, SKIP_WORDS)) {
-      void judge("");
+      void judge("", { force: true });
       return;
     }
 
     draftRef.current = `${draftRef.current} ${trimmed}`.trim();
     setHeard(draftRef.current);
+    armWatchdog();
     if (quietRef.current) clearTimeout(quietRef.current);
     quietRef.current = setTimeout(() => void judge(draftRef.current), AUTO_SUBMIT_MS);
   }
@@ -577,6 +774,9 @@ export function VoiceQuizPlayer({
   function start() {
     setError(null);
     setStage("asking");
+    // The prefetch normally finished long ago; retry a failed one now rather
+    // than falling back to a server round trip for the first answer.
+    if (answerKeyRef.current.size === 0) void loadAnswerKey();
     const line = quizLine("quiz-intro");
     void playLine({ key: "quiz-intro", text: line.text }, askQuestion);
   }
@@ -590,16 +790,39 @@ export function VoiceQuizPlayer({
     listening,
     interim,
     blocked,
+    error: recognitionError,
     start: startMic,
     abort: abortMic,
+    clearError: clearMicError,
+    clearInterim: clearMicInterim,
     getInterim,
-  } = useSpeechRecognition(handleSpoken);
+  } = useSpeechRecognition(handleSpoken, handleInterimSpoken);
 
   useEffect(() => {
     micRef.current = { abort: abortMic, getInterim };
   }, [abortMic, getInterim]);
 
-  const canListen = supported && !blocked;
+  useEffect(() => {
+    clearMicErrorRef.current = clearMicError;
+  }, [clearMicError]);
+
+  useEffect(() => {
+    clearMicInterimRef.current = clearMicInterim;
+  }, [clearMicInterim]);
+
+  const questionText = question?.question ?? "";
+
+  // The browser refused the question's own language and it is already the
+  // English fallback: there is nothing left to step down to.
+  const languageUnavailable =
+    recognitionError?.code === "language-not-supported" &&
+    speechLangFor(detectLanguage(questionText)) === "en-PH";
+  // A connection or service error also leaves the mic silent. Rather than loop
+  // restarting it, let the student tap or type the answer.
+  const recognitionFailed =
+    recognitionError !== null && recognitionError.code !== "language-not-supported";
+  const canListen =
+    supported && !blocked && !languageUnavailable && !recognitionFailed;
 
   /** The mic is open only while a question is actually waiting for an answer. */
   useEffect(() => {
@@ -607,12 +830,89 @@ export function VoiceQuizPlayer({
       abortMic();
       return;
     }
-    startMic(speechLangFor(detectLanguage(question?.question ?? "")), {
+
+    // A generated quiz can be in Cebuano or Filipino, and many browsers only
+    // serve English. Step down to the closest supported language instead of
+    // retrying one the service rejects forever.
+    const previous = micLangRef.current;
+    let attempt =
+      previous?.question === questionText
+        ? previous.lang
+        : speechLangFor(detectLanguage(questionText));
+
+    if (
+      recognitionError?.code === "language-not-supported" &&
+      previous?.question === questionText &&
+      previous.lang === attempt
+    ) {
+      const fallback = LANG_FALLBACK[attempt];
+      if (!fallback) return;
+      attempt = fallback;
+    }
+    micLangRef.current = { question: questionText, lang: attempt };
+
+    startMic(attempt, {
       continuous: true,
       keepInterim: true,
+      // The question clip is played through a plain <audio> element and the mic
+      // opens only after it ends, so there is no tutor playback to filter. The
+      // shared engine may still be winding down a navigation confirmation; the
+      // echo guard would otherwise drop the student's answer entirely.
+      listenWhileSpeaking: true,
     });
     return () => abortMic();
-  }, [stage, canListen, startMic, abortMic, question?.question]);
+  }, [
+    stage,
+    canListen,
+    startMic,
+    abortMic,
+    questionText,
+    recognitionError,
+    micSession,
+  ]);
+
+  /**
+   * The silence clock belongs to the listening window, not to one recognition
+   * session: reopening the mic after Chrome ends it must not postpone the
+   * watchdog forever. Only a new question, a re-ask, or a heard word re-arms it.
+   */
+  useEffect(() => {
+    if (stage !== "listening" || !canListen) return;
+    armWatchdog();
+    return () => {
+      if (watchdogRef.current) {
+        clearTimeout(watchdogRef.current);
+        watchdogRef.current = null;
+      }
+    };
+  }, [stage, canListen, armWatchdog]);
+
+  /**
+   * Chrome ends a recognition session after a few seconds of silence even with
+   * `continuous: true`. The quiz has to reopen it while the question is still
+   * waiting, or the screen says "Listening" with the microphone already closed
+   * — the student answers and nothing happens.
+   */
+  useEffect(() => {
+    if (stage !== "listening" || !canListen || listening) return;
+    // Words were just heard and the quiet timer is about to grade them. Do not
+    // reopen the mic into the gap: it would catch the room and reset that timer
+    // with noise before the answer is judged.
+    if (quietRef.current) return;
+    // The last language the browser served has no fallback left. Reopening it
+    // would only loop; the options are tappable instead.
+    if (recognitionError?.code === "language-not-supported") {
+      const attempted = micLangRef.current;
+      if (
+        attempted?.question === questionText &&
+        !LANG_FALLBACK[attempted.lang]
+      ) {
+        return;
+      }
+    }
+    const timer = setTimeout(() => setMicSession((session) => session + 1), 500);
+    return () => clearTimeout(timer);
+  }, [stage, canListen, listening, recognitionError, questionText, micSession]);
 
   // A quiz that is left, or a screen that goes away, must not keep talking or
   // listening behind the student's back.
@@ -621,6 +921,7 @@ export function VoiceQuizPlayer({
       leftRef.current = true;
       if (quietRef.current) clearTimeout(quietRef.current);
       if (capRef.current) clearTimeout(capRef.current);
+      if (watchdogRef.current) clearTimeout(watchdogRef.current);
       stopLine();
       micRef.current.abort();
     },
@@ -669,7 +970,7 @@ export function VoiceQuizPlayer({
           aria-label="Question progress"
         >
           {questions.map((entry, position) => {
-            const done = entry.id in answersRef.current;
+            const done = answeredIds.includes(entry.id);
             const active = position === index;
             return (
               <span
@@ -755,13 +1056,17 @@ export function VoiceQuizPlayer({
                     option.trim().toLowerCase() ===
                       feedback.correctAnswer.trim().toLowerCase();
                   return (
-                    <div
+                    <button
                       key={option}
+                      type="button"
+                      onClick={() => answerByHand(option)}
+                      disabled={stage !== "listening" && stage !== "asking"}
                       className={cn(
-                        "flex w-full items-center gap-3.5 rounded-2xl border px-4 py-3.5 text-sm transition-all duration-200",
+                        "flex w-full items-center gap-3.5 rounded-2xl border px-4 py-3.5 text-left text-sm transition-all duration-200",
                         isAnswer
                           ? "border-emerald-400 bg-emerald-50 ring-1 ring-emerald-200 dark:border-emerald-500/50 dark:bg-emerald-500/10 dark:ring-emerald-500/25"
-                          : "border-zinc-200 dark:border-zinc-700"
+                          : "border-zinc-200 hover:border-brand-300 hover:bg-zinc-50 disabled:hover:border-zinc-200 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:border-brand-500/40 dark:hover:bg-zinc-800/60 dark:disabled:hover:border-zinc-700 dark:disabled:hover:bg-transparent",
+                        "disabled:cursor-default"
                       )}
                     >
                       <span
@@ -787,7 +1092,7 @@ export function VoiceQuizPlayer({
                       {isAnswer && (
                         <Check className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
                       )}
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -860,20 +1165,21 @@ export function VoiceQuizPlayer({
             {!canListen && (
               <p className="mt-4 rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30">
                 {blocked
-                  ? "The browser refused the microphone — allow it, or pick your answer below."
-                  : "This browser can't listen for speech — pick your answer below instead."}
+                  ? "The browser refused the microphone — allow it, or tap the correct option above."
+                  : "This browser can't listen for speech — tap the correct option above, or type a short answer."}
               </p>
             )}
 
-            {/* Picking by hand, for a browser or a moment with no microphone. A
-                short answer has no options, so it gets a field instead. */}
-            {!canListen && stage !== "verdict" && question.type === "short_answer" && (
+            {/* A short answer has no options to tap, so the field is always
+                available while the question waits — even with a live mic. */}
+            {(stage === "listening" || stage === "asking") &&
+              question.type === "short_answer" && (
               <form
                 onSubmit={(event) => {
                   event.preventDefault();
                   const value = typed.trim();
                   if (!value) return;
-                  void finishQuestion(question, value, value);
+                  answerByHand(value);
                 }}
                 className="mt-4 flex flex-wrap items-center gap-2"
               >
@@ -893,24 +1199,6 @@ export function VoiceQuizPlayer({
                   Answer
                 </button>
               </form>
-            )}
-
-            {!canListen && stage !== "verdict" && question.type !== "short_answer" && (
-              <div className="mt-4 space-y-2.5">
-                {(question.options ?? []).map((option, position) => (
-                  <button
-                    key={option}
-                    type="button"
-                    onClick={() => void finishQuestion(question, option, option)}
-                    className="group flex w-full items-center gap-3.5 rounded-2xl border border-zinc-200 px-4 py-3.5 text-left text-sm text-zinc-700 transition-all duration-200 hover:border-brand-300 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:border-brand-500/40 dark:hover:bg-zinc-800/60"
-                  >
-                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-zinc-200 text-xs font-bold text-zinc-500 transition-colors group-hover:border-brand-300 group-hover:text-brand-700 dark:border-zinc-700 dark:text-zinc-400">
-                      {optionLetter(position)}
-                    </span>
-                    <span className="min-w-0 flex-1 leading-6">{option}</span>
-                  </button>
-                ))}
-              </div>
             )}
 
             {error && (
@@ -935,7 +1223,7 @@ export function VoiceQuizPlayer({
           {stage === "listening" && (
             <button
               type="button"
-              onClick={() => void judge("")}
+              onClick={() => void judge("", { force: true })}
               className="inline-flex items-center justify-center gap-2 rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800"
             >
               <SkipForward className="h-4 w-4" />

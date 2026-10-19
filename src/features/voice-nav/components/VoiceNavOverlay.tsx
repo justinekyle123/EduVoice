@@ -284,12 +284,22 @@ export function VoiceNavOverlay() {
 
         <button
           type="button"
-          onClick={nav.toggle}
+          onClick={nav.phase === "speaking" ? nav.stopSpeaking : nav.toggle}
           aria-pressed={enabled}
           aria-label={
-            enabled ? "Turn off voice navigation" : "Turn on voice navigation"
+            nav.phase === "speaking"
+              ? "Stop EduVoice speaking"
+              : enabled
+                ? "Turn off voice navigation"
+                : "Turn on voice navigation"
           }
-          title={enabled ? "Turn off voice navigation (Alt+V)" : "Voice navigation (Alt+V)"}
+          title={
+            nav.phase === "speaking"
+              ? "Stop speaking (or say stop)"
+              : enabled
+                ? "Turn off voice navigation (Alt+V)"
+                : "Voice navigation (Alt+V)"
+          }
           className={cn(
             "flex h-14 w-14 items-center justify-center rounded-full shadow-xl transition-all duration-200",
             enabled
@@ -318,12 +328,22 @@ export function VoiceNavToggle() {
   return (
     <button
       type="button"
-      onClick={nav.toggle}
+      onClick={nav.phase === "speaking" ? nav.stopSpeaking : nav.toggle}
       aria-pressed={nav.enabled}
       aria-label={
-        nav.enabled ? "Turn off voice navigation" : "Turn on voice navigation"
+        nav.phase === "speaking"
+          ? "Stop EduVoice speaking"
+          : nav.enabled
+            ? "Turn off voice navigation"
+            : "Turn on voice navigation"
       }
-      title={nav.enabled ? "Voice navigation is on (Alt+V)" : "Turn on voice navigation (Alt+V)"}
+      title={
+        nav.phase === "speaking"
+          ? "Stop speaking (or say stop)"
+          : nav.enabled
+            ? "Voice navigation is on (Alt+V)"
+            : "Turn on voice navigation (Alt+V)"
+      }
       className={cn(
         "flex h-9 w-9 items-center justify-center rounded-lg transition-colors",
         nav.enabled

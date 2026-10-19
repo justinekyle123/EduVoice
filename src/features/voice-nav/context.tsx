@@ -27,6 +27,7 @@ import { DEFAULT_TTS_VOICE } from "@/features/chat/lib/voices";
 import { useSpeechRecognition } from "@/features/chat/hooks/useSpeechRecognition";
 import { useSpeechSynthesis } from "@/features/chat/hooks/useSpeechSynthesis";
 import { getSpeechEngine } from "@/features/chat/lib/speechEngine";
+import { isStopRequest } from "@/features/chat/lib/interrupt";
 import {
   speechLangFor,
   type DetectedLanguage,
@@ -107,8 +108,18 @@ export type VoiceNavApi = {
   setLanguage: (lang: DetectedLanguage) => void;
   refreshTargets: () => ClickTarget[];
   activateIndex: (index: number) => void;
+  /** Silence the tutor without turning voice navigation off. */
+  stopSpeaking: () => void;
   registerPageCommands: (id: string, commands: PageCommand[]) => void;
   unregisterPageCommands: (id: string) => void;
+  /**
+   * Stop listening without changing the saved on/off preference. Used while a
+   * screen owns the microphone (the voice quiz), because two SpeechRecognition
+   * sessions in one tab fight over the same input.
+   */
+  suspendListening: () => void;
+  /** Reopen the microphone after a screen releases it. */
+  resumeListening: () => void;
 };
 
 const VoiceNavContext = createContext<VoiceNavApi | null>(null);
@@ -159,6 +170,8 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
   const language = useSyncExternalStore(subscribeSettings, readLang, serverLang);
 
   const [panelOpen, setPanelOpen] = useState(false);
+  /** Another voice feature owns the microphone (see suspendListening). */
+  const [suspended, setSuspended] = useState(false);
   const [heard, setHeard] = useState("");
   const [feedback, setFeedback] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
@@ -173,6 +186,25 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
     speakLine,
     stop: stopSpeaking,
   } = useSpeechSynthesis();
+
+  /**
+   * Silence the tutor and say so. The spoken help is long, so the student must
+   * be able to cut it off — by saying stop or by pressing the floating button —
+   * without switching voice navigation off.
+   */
+  const stopPlayback = useCallback(() => {
+    stopSpeaking();
+    setFeedback("Stopped.");
+  }, [stopSpeaking]);
+
+  const speakingRef = useRef(speaking);
+  const stopPlaybackRef = useRef(stopPlayback);
+  useEffect(() => {
+    speakingRef.current = speaking;
+  }, [speaking]);
+  useEffect(() => {
+    stopPlaybackRef.current = stopPlayback;
+  }, [stopPlayback]);
 
   const handleCommandRef = useRef<(text: string) => void>(() => {});
 
@@ -190,6 +222,13 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
       // The words were already acted on early: drop the repeat.
       if (actedOnRef.current) {
         actedOnRef.current = "";
+        return;
+      }
+      // While EduVoice is talking its own words come back through the mic. Only
+      // an explicit stop request may interrupt it — no page may be opened and no
+      // command may run off the back of that echo.
+      if (speakingRef.current) {
+        if (isStopRequest(finalText)) stopPlaybackRef.current();
         return;
       }
       handleCommandRef.current(finalText);
@@ -436,6 +475,9 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
     writeLang(lang);
   }, []);
 
+  const suspendListening = useCallback(() => setSuspended(true), []);
+  const resumeListening = useCallback(() => setSuspended(false), []);
+
   // -------------------------------------------------------------------------
   // Dispatch
   // -------------------------------------------------------------------------
@@ -632,12 +674,22 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
    */
   const handleInterim = useCallback(
     (interimText: string) => {
+      const pending = interimText.trim();
+      if (!pending) return;
+
+      // Speaking: wait for a stop word and nothing else. This is what lets the
+      // student cut the help short without it being taken as a new command.
+      if (speakingRef.current) {
+        if (actedOnRef.current || !isStopRequest(pending)) return;
+        actedOnRef.current = pending;
+        stopPlaybackRef.current();
+        return;
+      }
+
       // One command per turn: until the transcript moves on (see the effect
       // below) the rest of this utterance must not be taken as another command.
       if (!enabled || blocked || actedOnRef.current) return;
-
-      const pending = interimText.trim();
-      if (!pending || !looksLikeCommand(pending)) return;
+      if (!looksLikeCommand(pending)) return;
 
       actedOnRef.current = pending;
       void handleCommand(pending);
@@ -663,11 +715,17 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
   // Listening loop
   // -------------------------------------------------------------------------
 
-  // Never listen while EduVoice is talking or while navigation is off. Its own
-  // reply is the one thing the recognizer must not pick up.
+  // The recognizer stays open while EduVoice talks so it can hear a stop word.
+  // On each transition into or out of speaking it is restarted: going in, the
+  // student's previous command words are dropped so they cannot bury a "stop";
+  // coming out, the tutor's own voice is dropped the same way. Turning
+  // navigation off still closes the microphone entirely.
+  const wasSpeakingRef = useRef(false);
   useEffect(() => {
-    if (!enabled || speaking) abort();
-  }, [enabled, speaking, abort]);
+    if (!enabled || suspended) abort();
+    else if (speaking !== wasSpeakingRef.current) abort();
+    wasSpeakingRef.current = speaking;
+  }, [enabled, speaking, suspended, abort]);
 
   // Keep one session open (restarting across the browser's own silence timeouts,
   // and after every reply) for as long as voice navigation is on.
@@ -683,7 +741,7 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
   //   • the language actually asked for — see `unsupportedLangsRef` below.
   //   • how long the mic stays closed afterwards — `restartDelayRef`.
   useEffect(() => {
-    if (!enabled || speaking || blocked || !supported || listening) return;
+    if (!enabled || suspended || blocked || !supported || listening) return;
 
     let attempt = speechLangFor(language);
     while (unsupportedLangsRef.current.has(attempt) && LANG_FALLBACK[attempt]) {
@@ -691,13 +749,24 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
     }
     attemptLangRef.current = attempt;
 
+    // `speaking` is in this effect's dependencies on purpose: a session opened
+    // while EduVoice talks must not carry words across a restart, because those
+    // words are the tutor's own voice coming back through the microphone.
     const timer = window.setTimeout(
-      () => start(attempt, { continuous: true, keepInterim: true }),
+      () =>
+        start(attempt, {
+          continuous: true,
+          keepInterim: !speakingRef.current,
+          // Stop words have to be heard over the tutor. The echo is filtered by
+          // only acting on those words while `speaking` is true.
+          listenWhileSpeaking: true,
+        }),
       restartDelayRef.current
     );
     return () => window.clearTimeout(timer);
   }, [
     enabled,
+    suspended,
     speaking,
     blocked,
     supported,
@@ -786,7 +855,7 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
   // -------------------------------------------------------------------------
 
   const value = useMemo<VoiceNavApi>(() => {
-    const phase: VoiceNavPhase = !enabled
+    const phase: VoiceNavPhase = !enabled || suspended
       ? "off"
       : speaking
         ? "speaking"
@@ -794,17 +863,19 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
           ? "thinking"
           : "listening";
 
-    const status = !enabled
-      ? "Voice navigation is off"
-      : !supported
-        ? "This browser cannot listen — voice navigation is unavailable"
-        : blocked
-          ? "Microphone blocked — allow it to use voice navigation"
-          : speaking
-            ? "EduVoice is speaking…"
-            : thinking
-              ? "Working on it…"
-              : "Listening for a command";
+    const status = suspended
+      ? "Paused while the voice quiz uses the microphone"
+      : !enabled
+        ? "Voice navigation is off"
+        : !supported
+          ? "This browser cannot listen — voice navigation is unavailable"
+          : blocked
+            ? "Microphone blocked — allow it to use voice navigation"
+            : speaking
+              ? "EduVoice is speaking…"
+              : thinking
+                ? "Working on it…"
+                : "Listening for a command";
 
     return {
       enabled,
@@ -826,11 +897,15 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
       setLanguage,
       refreshTargets,
       activateIndex,
+      stopSpeaking: stopPlayback,
       registerPageCommands,
       unregisterPageCommands,
+      suspendListening,
+      resumeListening,
     };
   }, [
     enabled,
+    suspended,
     supported,
     blocked,
     speaking,
@@ -849,8 +924,11 @@ export function VoiceNavProvider({ children }: { children: React.ReactNode }) {
     setLanguage,
     refreshTargets,
     activateIndex,
+    stopPlayback,
     registerPageCommands,
     unregisterPageCommands,
+    suspendListening,
+    resumeListening,
   ]);
 
   return (

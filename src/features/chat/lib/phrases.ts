@@ -77,11 +77,28 @@ export type VoiceOpener = {
 
 // Each opener is deliberately self-contained: it invites the student to speak
 // next, so nothing in it depends on a conversation the model has not seen yet.
+//
+// Every mode has several takes on purpose: a student who opens voice mode three
+// times in an evening should not hear the same greeting three times. One is
+// picked at random when the call starts (see `openerFor`), and the choice made
+// last is remembered for the session so two calls in a row never repeat it.
 export const VOICE_OPENERS: VoiceOpener[] = [
   {
     mode: "chat",
     key: "phrase-chat",
     text: "Hi, I'm EduVoice. What would you like to learn today?",
+    style: "tutor",
+  },
+  {
+    mode: "chat",
+    key: "phrase-chat-2",
+    text: "Hello again. What are we studying today? I'm listening.",
+    style: "tutor",
+  },
+  {
+    mode: "chat",
+    key: "phrase-chat-3",
+    text: "I'm here whenever you're ready. Ask me anything you're studying.",
     style: "tutor",
   },
   {
@@ -91,9 +108,33 @@ export const VOICE_OPENERS: VoiceOpener[] = [
     style: "hint",
   },
   {
+    mode: "hint",
+    key: "phrase-hint-2",
+    text: "Hint mode. Show me or describe the problem, and I'll nudge you in the right direction without giving the answer away.",
+    style: "hint",
+  },
+  {
+    mode: "hint",
+    key: "phrase-hint-3",
+    text: "Ready to help you think it through. Tell me the problem, and I'll start you with just one hint.",
+    style: "hint",
+  },
+  {
     mode: "debate",
     key: "phrase-debate",
     text: "I'm ready to debate. Tell me the topic and which side you're taking, and I'll argue the opposite.",
+    style: "debate",
+  },
+  {
+    mode: "debate",
+    key: "phrase-debate-2",
+    text: "Debate mode. Name the motion and pick a side, and I'll take the other one.",
+    style: "debate",
+  },
+  {
+    mode: "debate",
+    key: "phrase-debate-3",
+    text: "Let's argue. Give me a topic you believe in and the position you want, and I'll challenge it.",
     style: "debate",
   },
   {
@@ -102,11 +143,61 @@ export const VOICE_OPENERS: VoiceOpener[] = [
     text: "Let's start your interview practice. Tell me the role you're applying for, and I'll ask the first question.",
     style: "interview",
   },
+  {
+    mode: "interview",
+    key: "phrase-interview-2",
+    text: "Interview practice is ready. Tell me the job you're going for, and we'll begin.",
+    style: "interview",
+  },
+  {
+    mode: "interview",
+    key: "phrase-interview-3",
+    text: "Let's practise your interview. What role are you preparing for? I'll ask the questions.",
+    style: "interview",
+  },
 ];
 
-/** The opener for a chat mode, or null when the mode has none. */
+/** Session key remembering the last opener used, so it is not repeated. */
+const LAST_OPENER_KEY = "eduvoice:last-opener";
+
+/**
+ * The opener for a chat mode, or null when the mode has none.
+ *
+ * One of the mode's takes is chosen at random. The previous choice is kept in
+ * sessionStorage and excluded while another take exists, so opening voice mode
+ * twice in a row sounds different both times; a fresh session starts from all
+ * of them again. Storage is best-effort: private mode or a sandboxed frame just
+ * means every call picks freely.
+ */
 export function openerFor(mode: string | undefined): VoiceOpener | null {
-  return VOICE_OPENERS.find((opener) => opener.mode === mode) ?? null;
+  const choices = VOICE_OPENERS.filter((opener) => opener.mode === mode);
+  if (choices.length === 0) return null;
+  if (choices.length === 1) return choices[0];
+
+  if (typeof window === "undefined") {
+    return choices[Math.floor(Math.random() * choices.length)];
+  }
+
+  const storageKey = `${LAST_OPENER_KEY}:${mode}`;
+  let previous: string | null = null;
+  try {
+    previous = window.sessionStorage.getItem(storageKey);
+  } catch {
+    // No storage here — a random pick is still fine.
+  }
+
+  const pool =
+    previous && choices.length > 1
+      ? choices.filter((opener) => opener.key !== previous)
+      : choices;
+  const chosen = pool[Math.floor(Math.random() * pool.length)] ?? choices[0];
+
+  try {
+    window.sessionStorage.setItem(storageKey, chosen.key);
+  } catch {
+    // Nothing to remember; the next call still picks at random.
+  }
+  return chosen;
 }
 
 // ---------------------------------------------------------------------------
@@ -354,6 +445,11 @@ export const QUIZ_LINES = [
   {
     key: "quiz-finished",
     text: "That's the last question. Your score is on screen now.",
+    style: "tutor",
+  },
+  {
+    key: "quiz-move-on",
+    text: "Moving on.",
     style: "tutor",
   },
 ] as const satisfies readonly PhraseLine[];

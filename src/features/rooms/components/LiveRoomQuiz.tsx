@@ -23,7 +23,6 @@ import {
   Loader2,
   Mic,
   Play,
-  Send,
   SkipForward,
   Square,
   Trophy,
@@ -38,8 +37,11 @@ import { useSpeechSynthesis } from "@/features/chat/hooks/useSpeechSynthesis";
 import { getSpeechEngine } from "@/features/chat/lib/speechEngine";
 import { DEFAULT_TTS_VOICE } from "@/features/chat/lib/voices";
 import { detectLanguage, speechLangFor } from "@/features/chat/lib/detect";
+import { MicOrb, type MicStage } from "@/features/quiz/components/MicOrb";
+import { optionLetter } from "@/features/quiz/lib/narration";
 import { resolveSpokenAnswer, spokenAnswerLabel } from "../lib/voiceAnswer";
 import { liveProgress } from "../lib/live";
+import { liveQuestionNarration } from "../lib/narration";
 import {
   endRoomLiveSession,
   getRoomLiveState,
@@ -56,9 +58,21 @@ import { removeRoomMember } from "../server/actions";
 /** How often the shared state is re-read. Kept short so a question opens (and
  * is read aloud) close to the moment the server starts its clock. */
 const POLL_MS = 1_000;
-/** Quiet time after the last recognised word before the answer is sent. */
-const AUTO_SUBMIT_MS = 1_600;
-const OPTION_LETTERS = ["A", "B", "C", "D", "E", "F"];
+/**
+ * Quiet time after the last recognised word before the answer is sent. Short on
+ * purpose — the quiz page's voice player marks an answer this quickly, and a
+ * room answer that takes longer to leave the mic reads as a frozen question.
+ */
+const AUTO_SUBMIT_MS = 900;
+/**
+ * How long after a question clip stops its last words are ignored. Chrome
+ * finalizes an utterance on the silence just after audio ends, so without this
+ * the clip would be heard as the student's answer.
+ */
+const CLIP_ECHO_GUARD_MS = 1_200;
+/** The card the quiz page's voice player wears; the room quiz wears it too. */
+const panel =
+  "rounded-2xl border border-zinc-200/80 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900";
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
@@ -79,7 +93,8 @@ function initialsFor(name: string | null, email: string) {
 export function narrationFor(state: RoomLiveState): string | null {
   if (!state.question || state.session.status === "ended") return null;
   const { position, total } = liveProgress(state.session);
-  return `Question ${position} of ${total}. ${state.question.question} Say your answer.`;
+  // The very words the server rendered into the question's clip.
+  return liveQuestionNarration(state.question, position, total);
 }
 
 export function LiveRoomQuiz({
@@ -98,12 +113,14 @@ export function LiveRoomQuiz({
 
   const inFlightRef = useRef(false);
   const narratedRef = useRef<string | null>(null);
-  const { speak, stop: stopSpeaking } = useSpeechSynthesis();
+  const { speak, speaking, stop: stopSpeaking } = useSpeechSynthesis();
 
   // A host-dropped clip (manual quiz) plays instead of the TTS read-aloud. One
   // element is reused for the whole session so a new question's audio can't
   // overlap the previous clip.
   const clipRef = useRef<HTMLAudioElement | null>(null);
+  /** Recognition is ignored until this moment — the clip's own words, not an answer. */
+  const clipQuietUntilRef = useRef(0);
 
   const stopClip = useCallback(() => {
     const clip = clipRef.current;
@@ -135,12 +152,32 @@ export function LiveRoomQuiz({
     // Configure the fresh element first, then hand it to the ref: the ref
     // owns it from that point on and only ever pauses it.
     const clip = new Audio();
-    clip.onerror = toFallback;
-    clip.onended = null;
+    clip.onerror = () => {
+      clipQuietUntilRef.current = Date.now() + CLIP_ECHO_GUARD_MS;
+      toFallback();
+    };
+    clip.onended = () => {
+      // Chrome finalizes the clip's last words just after it stops; ignore that
+      // tail so the question is never submitted as its own answer.
+      clipQuietUntilRef.current = Date.now() + CLIP_ECHO_GUARD_MS;
+    };
     clip.src = url;
     clipRef.current = clip;
     void clip.play().catch(toFallback);
   }, []);
+
+  /**
+   * True while the question's uploaded clip is audible, or was a moment ago. A
+   * clip is plain audio, so the recognition hook's own echo guard cannot see it;
+   * the answer panel drops what it hears meanwhile instead of submitting the
+   * question as the answer.
+   */
+  const questionAudioAudible = useCallback(
+    () =>
+      (clipRef.current !== null && !clipRef.current.paused) ||
+      Date.now() < clipQuietUntilRef.current,
+    []
+  );
 
   // The overlay closing must not leave a clip running behind it. The cleanup
   // goes through stopClip rather than the ref itself, so the element stays
@@ -229,10 +266,14 @@ export function LiveRoomQuiz({
   // Narrator
   // -------------------------------------------------------------------------
 
-  // A fresh waiting room (replay) or the end of the session ends the audio too.
+  // The question's voice belongs to the question: once it closes — everyone has
+  // answered, the clock ran out, or the host moved on — the narrator stops, so
+  // the read-aloud never talks over the reveal or the next phase.
   useEffect(() => {
-    if (status === "lobby" || status === "ended") stopClip();
-  }, [status, stopClip]);
+    if (status === "question") return;
+    stopClip();
+    stopSpeaking();
+  }, [status, stopClip, stopSpeaking]);
 
   useEffect(() => {
     if (!state?.question || status === "ended") return;
@@ -306,91 +347,129 @@ export function LiveRoomQuiz({
       aria-label="Live room quiz"
       className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-white dark:bg-zinc-950"
     >
-      {/* Header */}
-      <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-zinc-200/70 px-4 py-3 dark:border-zinc-800 sm:px-6">
-        <button
-          type="button"
-          onClick={end}
-          className="inline-flex items-center gap-1.5 rounded-xl px-2 py-1.5 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          Back to room
-        </button>
-
-        <span className="ml-1 inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-brand-800 dark:bg-brand-500/10 dark:text-brand-300">
-          Live voice quiz
-        </span>
-
-        {status !== "lobby" && (
-          <span className="text-sm font-medium text-zinc-600 dark:text-zinc-300">
-            {position} / {total}
-          </span>
-        )}
-
-        {status === "question" && (
-          <span
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold tabular-nums",
-              remaining <= 5000
-                ? "bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400"
-                : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
-            )}
-          >
-            <Clock className="h-3.5 w-3.5" />
-            {Math.ceil(remaining / 1000)}s
-          </span>
-        )}
-
-        <span className="ml-auto flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
-          <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
-          {status === "lobby"
-            ? `${state?.readyUserIds.length ?? 0} of ${Math.max((state?.memberCount ?? 1) - 1, 0)} ready`
-            : `${state?.answeredCount ?? 0} of ${state?.memberCount ?? 0} answered`}
-        </span>
-
-        {state?.isHost && status !== "lobby" && (
-          <div className="flex items-center gap-1.5">
-            {status === "question" && (
+      {/* Header — the same top panel the quiz page's voice player wears. */}
+      <div className="shrink-0 px-4 pt-4 sm:px-6 sm:pt-6">
+        <div className="mx-auto w-full max-w-5xl space-y-3">
+          <div className={cn(panel, "p-4")}>
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <button
                 type="button"
-                onClick={() => void revealRoomLiveQuestion(roomId).then(refresh)}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                onClick={end}
+                className="inline-flex items-center gap-1.5 text-sm font-medium text-zinc-500 transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
               >
-                <Eye className="h-3.5 w-3.5" />
-                Reveal
+                <ArrowLeft className="h-4 w-4" />
+                Back to room
               </button>
-            )}
-            <button
-              type="button"
-              onClick={() => void nextRoomLiveQuestion(roomId).then(refresh)}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-br from-brand-400 to-brand-500 px-3 py-1.5 text-xs font-semibold text-brand-950 transition-colors hover:brightness-105"
-            >
-              <SkipForward className="h-3.5 w-3.5" />
-              {status === "question" ? "Skip" : "Next"}
-            </button>
-            <button
-              type="button"
-              onClick={() => void endRoomLiveSession(roomId).then(refresh)}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:border-red-500/30 dark:text-red-400 dark:hover:bg-red-500/10"
-            >
-              <X className="h-3.5 w-3.5" />
-              End
-            </button>
-          </div>
-        )}
-      </header>
 
-      {/* Countdown bar */}
-      {status === "question" && session && (
-        <div className="h-1 w-full shrink-0 bg-zinc-100 dark:bg-zinc-800">
-          <div
-            className="h-full bg-gradient-to-r from-brand-400 to-brand-500 transition-[width] duration-200 ease-linear"
-            style={{
-              width: `${Math.min(100, (remaining / (session.questionSeconds * 1000)) * 100)}%`,
-            }}
-          />
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="hidden max-w-[16rem] truncate text-xs text-zinc-400 sm:inline dark:text-zinc-500">
+                  {state?.title}
+                </span>
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-brand-800 dark:bg-brand-500/10 dark:text-brand-300">
+                  <Mic className="h-3 w-3" />
+                  Live voice quiz
+                </span>
+                {status !== "lobby" && (
+                  <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                    Question {position} of {total}
+                  </span>
+                )}
+                {status === "question" && (
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold tabular-nums",
+                      remaining <= 5000
+                        ? "bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400"
+                        : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+                    )}
+                  >
+                    <Clock className="h-3.5 w-3.5" />
+                    {Math.ceil(remaining / 1000)}s
+                  </span>
+                )}
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-zinc-100 px-2.5 py-1 text-[11px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  {status === "lobby"
+                    ? `${state?.readyUserIds.length ?? 0} of ${Math.max((state?.memberCount ?? 1) - 1, 0)} ready`
+                    : `${state?.answeredCount ?? 0} of ${state?.memberCount ?? 0} answered`}
+                </span>
+              </div>
+            </div>
+
+            {/* One segment per question — answered, current, or still to come. */}
+            {status !== "lobby" && (
+              <div
+                className="mt-3 flex items-center gap-1.5"
+                role="group"
+                aria-label="Question progress"
+              >
+                {Array.from({ length: Math.max(total, 1) }, (_unused, step) => {
+                  const done =
+                    step < questionIndex || (step === questionIndex && state?.revealed);
+                  return (
+                    <span
+                      key={step}
+                      aria-label={`Question ${step + 1}${done ? " — answered" : ""}`}
+                      aria-current={step === questionIndex ? "true" : undefined}
+                      className={cn(
+                        "h-1.5 flex-1 rounded-full transition-all duration-200",
+                        step === questionIndex
+                          ? "bg-brand-500"
+                          : done
+                            ? "bg-brand-300 dark:bg-brand-500/50"
+                            : "bg-zinc-200 dark:bg-zinc-700"
+                      )}
+                    />
+                  );
+                })}
+              </div>
+            )}
+
+            {state?.isHost && status !== "lobby" && (
+              <div className="mt-3 flex flex-wrap items-center justify-end gap-2 border-t border-zinc-200/70 pt-3 dark:border-zinc-800">
+                {status === "question" && (
+                  <button
+                    type="button"
+                    onClick={() => void revealRoomLiveQuestion(roomId).then(refresh)}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                  >
+                    <Eye className="h-3.5 w-3.5" />
+                    Reveal
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void nextRoomLiveQuestion(roomId).then(refresh)}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-br from-brand-400 to-brand-500 px-3 py-1.5 text-xs font-semibold text-brand-950 transition-colors hover:brightness-105"
+                >
+                  <SkipForward className="h-3.5 w-3.5" />
+                  {status === "question" ? "Skip" : "Next"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void endRoomLiveSession(roomId).then(refresh)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:border-red-500/30 dark:text-red-400 dark:hover:bg-red-500/10"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  End
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Countdown bar */}
+          {status === "question" && session && (
+            <div className="h-1 w-full overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
+              <div
+                className="h-full bg-gradient-to-r from-brand-400 to-brand-500 transition-[width] duration-200 ease-linear"
+                style={{
+                  width: `${Math.min(100, (remaining / (session.questionSeconds * 1000)) * 100)}%`,
+                }}
+              />
+            </div>
+          )}
         </div>
-      )}
+      </div>
 
       {loading ? (
         <div className="flex flex-1 items-center justify-center">
@@ -439,73 +518,17 @@ export function LiveRoomQuiz({
           </button>
         </div>
       ) : (
-        <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-4 sm:p-6 lg:grid-cols-[1.6fr_1fr]">
+        <div className="mx-auto grid min-h-0 w-full max-w-5xl flex-1 gap-4 overflow-y-auto p-4 sm:p-6 lg:grid-cols-[1.6fr_1fr]">
           {/* Question + answering */}
           <div className="space-y-4">
-            <section className="rounded-3xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 sm:p-7">
-              <div className="flex items-start gap-3">
-                <p className="min-w-0 flex-1 text-lg font-semibold leading-8 text-zinc-900 dark:text-zinc-100 sm:text-xl sm:leading-9">
-                  {state.question.question}
-                </p>
-                <button
-                  type="button"
-                  onClick={readAgain}
-                  title="Read the question again"
-                  aria-label="Read the question again"
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-50 text-brand-700 transition-colors hover:bg-brand-100 dark:bg-brand-500/10 dark:text-brand-300 dark:hover:bg-brand-500/20"
-                >
-                  <Volume2 className="h-4 w-4" />
-                </button>
-              </div>
-
-              {state.question.options && state.question.options.length > 0 && (
-                <ul className="mt-5 space-y-2">
-                  {state.question.options.map((option, index) => {
-                    const isCorrect =
-                      state.revealed && option === state.question?.correctAnswer;
-                    const isMine = state.myAnswer === option;
-                    return (
-                      <li
-                        key={option}
-                        className={cn(
-                          "flex items-center gap-3 rounded-2xl border px-3.5 py-2.5 text-sm",
-                          isCorrect
-                            ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-200"
-                            : isMine
-                              ? "border-brand-300 bg-brand-50 text-brand-900 dark:border-brand-500/40 dark:bg-brand-500/10 dark:text-brand-200"
-                              : "border-zinc-200 text-zinc-700 dark:border-zinc-700 dark:text-zinc-200"
-                        )}
-                      >
-                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/70 text-[11px] font-bold ring-1 ring-inset ring-zinc-200 dark:bg-zinc-900/60 dark:ring-zinc-700">
-                          {OPTION_LETTERS[index] ?? index + 1}
-                        </span>
-                        <span className="min-w-0 flex-1">{option}</span>
-                        {isCorrect && <Check className="h-4 w-4 shrink-0" />}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-
-              {state.revealed && state.question.correctAnswer && (
-                <div className="mt-4 rounded-2xl bg-zinc-50 px-4 py-3 text-sm dark:bg-zinc-800/60">
-                  <p className="font-medium text-emerald-700 dark:text-emerald-300">
-                    Answer: {state.question.correctAnswer}
-                  </p>
-                  {state.question.explanation && (
-                    <p className="mt-1 leading-6 text-zinc-600 dark:text-zinc-300">
-                      {state.question.explanation}
-                    </p>
-                  )}
-                </div>
-              )}
-            </section>
-
             <AnswerPanel
               key={`${state.session.id}:${state.session.currentIndex}`}
               roomId={roomId}
               state={state}
               skewMs={skewMs}
+              narrationPlaying={speaking}
+              questionAudioAudible={questionAudioAudible}
+              onReplayQuestion={readAgain}
               onSubmitted={() => void refresh()}
             />
 
@@ -518,7 +541,7 @@ export function LiveRoomQuiz({
 
           {/* Live board + this question's answers */}
           <aside className="space-y-4">
-            <section className="rounded-3xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <section className={cn(panel, "p-5")}>
               <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                 <Trophy className="h-4 w-4 text-amber-500" />
                 Live results
@@ -562,7 +585,7 @@ export function LiveRoomQuiz({
               )}
             </section>
 
-            <section className="rounded-3xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <section className={cn(panel, "p-5")}>
               <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                 <Mic className="h-4 w-4 text-brand-600 dark:text-brand-400" />
                 This question
@@ -685,9 +708,17 @@ function LiveLobby({
             {readyCount} of {required.length} ready · {state.session.questionCount}{" "}
             questions · {state.session.questionSeconds}s each
           </p>
+          {state.voiceClips && (
+            <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-zinc-100 px-3 py-1 text-[11px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+              <Volume2 className="h-3 w-3" />
+              {state.voiceClips.ready === state.voiceClips.total
+                ? `Voice ready for all ${state.voiceClips.total} questions`
+                : `${state.voiceClips.ready} of ${state.voiceClips.total} questions voiced — the rest are read live`}
+            </p>
+          )}
         </div>
 
-        <section className="rounded-3xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <section className={cn(panel, "p-5")}>
           <ul className="space-y-2">
             {state.members.map((member) => {
               const isHost = member.role === "owner";
@@ -842,46 +873,114 @@ function LiveLobby({
 // Answering (one question's worth of state, reset by the key on remount)
 // ---------------------------------------------------------------------------
 
+const TYPE_LABELS: Record<string, string> = {
+  multiple_choice: "Multiple choice",
+  true_false: "True or false",
+  short_answer: "Short answer",
+};
+
+/** What the orb is doing, in the words the quiz page's voice player uses. */
+const STAGE_VIEW: Record<MicStage, { label: string; hint: string }> = {
+  ready: {
+    label: "Your turn",
+    hint: "The microphone is off — tap it, tap an option, or type your answer.",
+  },
+  asking: {
+    label: "Reading the question…",
+    hint: "Listen — the microphone opens with the question.",
+  },
+  listening: {
+    label: "Listening",
+    hint: "Say the letter or the words, then pause — or tap an option.",
+  },
+  judging: {
+    label: "Checking that answer…",
+    hint: "One moment while the answer is marked.",
+  },
+  verdict: {
+    label: "Here's how that went",
+    hint: "The host moves the room on.",
+  },
+  finished: {
+    label: "Answer locked in",
+    hint: "Waiting for the room…",
+  },
+};
+
+/** Recognition languages the browser almost never serves, and the closest it does. */
+const LANG_FALLBACK: Record<string, string> = {
+  "ceb-PH": "fil-PH",
+  "fil-PH": "en-PH",
+};
+
+const optionButton =
+  "flex w-full items-center gap-3.5 rounded-2xl border px-4 py-3.5 text-left text-sm transition-all duration-200";
+const quietButton =
+  "inline-flex items-center justify-center gap-2 rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800";
+const sendButton =
+  "inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-brand-400 to-brand-500 px-4 py-2.5 text-sm font-semibold text-brand-950 shadow-md shadow-brand-500/25 transition-all duration-200 hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60";
+
 function AnswerPanel({
   roomId,
   state,
   skewMs,
+  narrationPlaying,
+  questionAudioAudible,
+  onReplayQuestion,
   onSubmitted,
 }: {
   roomId: string;
   state: RoomLiveState;
   skewMs: number;
+  /** True while the narrator is still reading the question aloud. */
+  narrationPlaying: boolean;
+  /** True while a host-uploaded question clip is playing (or just stopped). */
+  questionAudioAudible: () => boolean;
+  onReplayQuestion: () => void;
   onSubmitted: () => void;
 }) {
-  const [micOn, setMicOn] = useState(false);
+  const [micOn, setMicOn] = useState(true);
   const [draft, setDraft] = useState("");
   const [typed, setTyped] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [locked, setLocked] = useState<{ answer: string; note: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Bumped to reopen the mic after Chrome ends a recognition session by itself.
+  const [micSession, setMicSession] = useState(0);
 
   const draftRef = useRef("");
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const quietRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sentRef = useRef(false);
+  // The live interim buffer lives in the recognition hook, which is declared
+  // below the handlers that need it; this ref is how they reach it.
+  const getInterimRef = useRef<() => string>(() => "");
+  // The recognition language last tried for this question, so a rejected
+  // Cebuano/Filipino question settles on one the browser serves instead of
+  // cycling back to the one it just refused.
+  const langRef = useRef<{ question: string; lang: string } | null>(null);
 
   const question = state.question;
   const answered = Boolean(state.myAnswer);
   const open = state.session.status === "question" && !answered;
+  const myAnswer = locked?.answer ?? state.myAnswer ?? "";
+
+  const clearQuiet = useCallback(() => {
+    if (quietRef.current) {
+      clearTimeout(quietRef.current);
+      quietRef.current = null;
+    }
+  }, []);
 
   const submit = useCallback(
     async (raw: string) => {
       if (!question || !raw.trim() || sentRef.current || !open) return;
       sentRef.current = true;
+      clearQuiet();
 
       const resolved = resolveSpokenAnswer(
         { type: question.type, options: question.options },
         raw
       );
-
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
 
       setSubmitting(true);
       setError(null);
@@ -909,6 +1008,7 @@ function AnswerPanel({
     [
       question,
       open,
+      clearQuiet,
       roomId,
       skewMs,
       state.session.currentIndex,
@@ -917,165 +1017,367 @@ function AnswerPanel({
     ]
   );
 
-  const { supported, listening, interim, start, stop, abort } = useSpeechRecognition(
-    (finalText) => {
-      const next = `${draftRef.current} ${finalText}`.replace(/\s+/g, " ").trim();
-      draftRef.current = next;
-      setDraft(next);
+  /**
+   * Everything heard so far: the words the browser committed plus the ones it is
+   * still holding as interim. Chrome often keeps a short answer interim and never
+   * finalizes it, so waiting for a final result alone is what left a spoken
+   * answer unheard on the first question.
+   */
+  function heardSoFar(liveInterim: string) {
+    return `${draftRef.current} ${liveInterim}`.replace(/\s+/g, " ").trim();
+  }
 
-      // More speech restarts the wait, so a longer answer stays one answer.
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => {
-        void submit(next);
-      }, AUTO_SUBMIT_MS);
-    }
-  );
-
-  useEffect(
-    () => () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    },
-    []
-  );
-
-  // The mic only listens during an open, unanswered question.
-  useEffect(() => {
-    if (!micOn || !open || !supported) {
-      abort();
-      return;
-    }
-    start(speechLangFor("en"), { continuous: true });
-    return () => abort();
-  }, [micOn, open, supported, start, abort]);
-
-  if (locked) {
-    return (
-      <section className="rounded-3xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="flex items-center gap-3">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">
-            <Check className="h-5 w-5" />
-          </span>
-          <div className="min-w-0">
-            <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-              Answer locked in
-            </p>
-            <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">
-              “{locked.answer}” — {locked.note}
-            </p>
-          </div>
-        </div>
-      </section>
+  function handleSpoken(finalText: string) {
+    if (!open || sentRef.current || questionAudioAudible()) return;
+    const trimmed = finalText.trim();
+    if (!trimmed) return;
+    draftRef.current = `${draftRef.current} ${trimmed}`.replace(/\s+/g, " ").trim();
+    setDraft(draftRef.current);
+    clearQuiet();
+    quietRef.current = setTimeout(
+      () => void submit(heardSoFar(getInterimRef.current())),
+      AUTO_SUBMIT_MS
     );
   }
 
+  function handleInterim(interimText: string) {
+    if (!open || sentRef.current || questionAudioAudible()) return;
+    const shown = heardSoFar(interimText);
+    if (!shown) return;
+    // Show the words at once; the answer itself is read from the live interim
+    // buffer when the quiet window closes, so nothing is lost if the browser
+    // never commits them.
+    setDraft(shown);
+    clearQuiet();
+    quietRef.current = setTimeout(
+      () => void submit(heardSoFar(getInterimRef.current())),
+      AUTO_SUBMIT_MS
+    );
+  }
+
+  const {
+    supported,
+    listening,
+    interim,
+    blocked,
+    error: recognitionError,
+    start,
+    stop,
+    abort,
+    getInterim,
+  } = useSpeechRecognition(handleSpoken, handleInterim);
+
+  useEffect(() => {
+    getInterimRef.current = getInterim;
+  }, [getInterim]);
+
+  const errorCode = recognitionError?.code ?? null;
+  const canListen = supported && !blocked && errorCode === null;
+
+  // The mic is open for the whole of an unanswered question, like the quiz
+  // page's voice player: the question is read aloud first, and recognition
+  // ignores what it hears while EduVoice itself is talking, so the student can
+  // answer the moment the reading ends — nothing to tap.
+  useEffect(() => {
+    if (!micOn || !open || !supported || blocked) {
+      abort();
+      return;
+    }
+
+    // A connection or service error leaves the mic silent until it clears; only
+    // a rejected language is worth retrying with a closer one.
+    if (errorCode !== null && errorCode !== "language-not-supported") {
+      abort();
+      return;
+    }
+
+    const questionText = question?.question ?? "";
+    const previous = langRef.current;
+    let attempt =
+      previous?.question === questionText
+        ? previous.lang
+        : speechLangFor(detectLanguage(questionText));
+
+    if (
+      errorCode === "language-not-supported" &&
+      previous?.question === questionText &&
+      previous.lang === attempt
+    ) {
+      const fallback = LANG_FALLBACK[attempt];
+      if (!fallback) {
+        abort();
+        return;
+      }
+      attempt = fallback;
+    }
+    langRef.current = { question: questionText, lang: attempt };
+
+    start(attempt, { continuous: true, keepInterim: true });
+    return () => abort();
+  }, [
+    micOn,
+    open,
+    supported,
+    blocked,
+    errorCode,
+    start,
+    abort,
+    question?.question,
+    micSession,
+  ]);
+
+  // Chrome closes a recognition session after a few seconds of silence. Reopen
+  // it while the question still waits, unless an answer is already on its way.
+  useEffect(() => {
+    if (!micOn || !open || !canListen || listening) return;
+    if (quietRef.current || sentRef.current) return;
+    const id = setTimeout(() => setMicSession((session) => session + 1), 500);
+    return () => clearTimeout(id);
+  }, [micOn, open, canListen, listening, micSession]);
+
+  // Leaving the question must not fire a submit timer for it afterwards.
+  useEffect(() => () => clearQuiet(), [clearQuiet]);
+
+  const stage: MicStage = submitting
+    ? "judging"
+    : state.revealed && myAnswer
+      ? "verdict"
+      : !open
+        ? "finished"
+        : narrationPlaying
+          ? "asking"
+          : listening
+            ? "listening"
+            : "ready";
+
+  const view = STAGE_VIEW[stage];
+  // Between questions, a student who did not answer sees why the card is idle.
+  const hint =
+    !open && !answered && state.session.status !== "question"
+      ? "Answers are in — the next question is coming up."
+      : view.hint;
+  const options = question?.options ?? [];
+  const correctAnswer = question?.correctAnswer ?? "";
+
   return (
-    <section className="rounded-3xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-      {answered ? (
-        <div className="flex items-center gap-3">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-300">
-            <Check className="h-5 w-5" />
+    <section className={cn(panel, "p-6 sm:p-8")}>
+      {/* The orb states the stage without words, exactly as on the quiz page. */}
+      <div className="flex flex-col items-center text-center">
+        <MicOrb stage={stage} correct={state.myCorrect} />
+
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-brand-700 dark:text-brand-400">
+            {TYPE_LABELS[question?.type ?? "multiple_choice"] ?? "Question"}
           </span>
-          <p className="text-sm text-zinc-700 dark:text-zinc-200">
-            You answered “{state.myAnswer}”. Waiting for the room…
-          </p>
+          <span className="text-[11px] text-zinc-400 dark:text-zinc-500">{view.label}</span>
         </div>
-      ) : state.session.status !== "question" ? (
-        <p className="flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Answers are in — the next question is coming up.
+
+        <p className="mt-2 max-w-md text-xs leading-5 text-zinc-500 dark:text-zinc-400">
+          {hint}
         </p>
-      ) : (
-        <div className="space-y-3">
-          <div className="flex items-center gap-3">
+      </div>
+
+      <p className="mt-6 text-lg font-medium leading-8 text-zinc-900 dark:text-zinc-100 sm:text-xl">
+        {question?.question}
+      </p>
+
+      {/* The options in the same lettered cards the quiz page's voice player
+          uses, so both ways of taking a quiz read alike. */}
+      {options.length > 0 && (
+        <div className="mt-5 space-y-2.5">
+          {options.map((option, position) => {
+            const isAnswer =
+              state.revealed &&
+              option.trim().toLowerCase() === correctAnswer.trim().toLowerCase();
+            const isMine =
+              myAnswer.trim().length > 0 &&
+              option.trim().toLowerCase() === myAnswer.trim().toLowerCase();
+            return (
+              <button
+                key={option}
+                type="button"
+                onClick={() => void submit(option)}
+                disabled={!open || submitting}
+                className={cn(
+                  optionButton,
+                  "disabled:cursor-default",
+                  isAnswer
+                    ? "border-emerald-400 bg-emerald-50 ring-1 ring-emerald-200 dark:border-emerald-500/50 dark:bg-emerald-500/10 dark:ring-emerald-500/25"
+                    : isMine
+                      ? "border-brand-400 bg-brand-50 ring-1 ring-brand-200 dark:border-brand-500/50 dark:bg-brand-500/10 dark:ring-brand-500/25"
+                      : "border-zinc-200 hover:border-brand-300 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:border-brand-500/40 dark:hover:bg-zinc-800/60"
+                )}
+              >
+                <span
+                  className={cn(
+                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border text-xs font-bold",
+                    isAnswer
+                      ? "border-emerald-400 bg-emerald-400 text-emerald-950"
+                      : isMine
+                        ? "border-brand-400 bg-brand-400 text-brand-950"
+                        : "border-zinc-200 text-zinc-500 dark:border-zinc-700 dark:text-zinc-400"
+                  )}
+                >
+                  {optionLetter(position)}
+                </span>
+                <span
+                  className={cn(
+                    "min-w-0 flex-1 leading-6",
+                    isAnswer
+                      ? "font-medium text-emerald-900 dark:text-emerald-200"
+                      : "text-zinc-700 dark:text-zinc-300"
+                  )}
+                >
+                  {option}
+                </span>
+                {isAnswer && (
+                  <Check className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {open && (draft || interim) && (
+        <p className="mt-4 flex items-start gap-2 rounded-xl bg-zinc-50 px-3.5 py-2.5 text-xs leading-5 text-zinc-600 ring-1 ring-zinc-100 dark:bg-zinc-800 dark:text-zinc-300 dark:ring-zinc-700">
+          <Mic className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-600 dark:text-brand-400" />
+          <span className="min-w-0">“{draft || interim}”</span>
+        </p>
+      )}
+
+      {(locked || state.myAnswer) && (
+        <div
+          className={cn(
+            "mt-4 flex items-start gap-3 rounded-2xl px-4 py-3.5 text-sm ring-1",
+            !state.revealed
+              ? "bg-brand-50 text-brand-900 ring-brand-100 dark:bg-brand-500/10 dark:text-brand-200 dark:ring-brand-500/30"
+              : state.myCorrect
+                ? "bg-emerald-50 text-emerald-800 ring-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-500/30"
+                : "bg-red-50 text-red-700 ring-red-100 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/30"
+          )}
+        >
+          <span
+            className={cn(
+              "mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full",
+              !state.revealed
+                ? "bg-brand-100 text-brand-700 dark:bg-brand-500/20 dark:text-brand-300"
+                : state.myCorrect
+                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300"
+                  : "bg-red-100 text-red-600 dark:bg-red-500/20 dark:text-red-300"
+            )}
+          >
+            {!state.revealed ? (
+              <Clock className="h-3.5 w-3.5" />
+            ) : state.myCorrect ? (
+              <Check className="h-3.5 w-3.5" />
+            ) : (
+              <X className="h-3.5 w-3.5" />
+            )}
+          </span>
+          <div className="min-w-0">
+            <p className="font-semibold">
+              {!state.revealed
+                ? "Answer locked in"
+                : state.myCorrect
+                  ? "Correct"
+                  : "Not this one"}
+              {myAnswer.trim().length > 0 && (
+                <span className="font-normal"> — you said “{myAnswer}”</span>
+              )}
+            </p>
+            {!state.revealed && locked && (
+              <p className="mt-1 text-xs leading-5 opacity-80">{locked.note}</p>
+            )}
+            {state.revealed && state.myCorrect === false && (
+              <p className="mt-1">
+                The answer is{" "}
+                <span className="font-medium text-emerald-700 dark:text-emerald-300">
+                  {correctAnswer}
+                </span>
+              </p>
+            )}
+            {state.revealed && question?.explanation && (
+              <p className="mt-1 text-xs leading-5 opacity-90">{question.explanation}</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {open && question?.type === "short_answer" && (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            const value = typed.trim();
+            if (!value) return;
+            setTyped("");
+            void submit(value);
+          }}
+          className="mt-4 flex flex-wrap items-center gap-2"
+        >
+          <input
+            value={typed}
+            onChange={(event) => setTyped(event.target.value)}
+            placeholder="Type your answer"
+            aria-label="Your answer"
+            maxLength={200}
+            className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm text-zinc-900 outline-none transition-colors placeholder:text-zinc-400 focus:border-brand-400 focus:ring-2 focus:ring-brand-200/70 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-brand-500 dark:focus:ring-brand-500/20"
+          />
+          <button
+            type="submit"
+            disabled={submitting || typed.trim().length === 0}
+            className={sendButton}
+          >
+            <Check className="h-4 w-4" />
+            Answer
+          </button>
+        </form>
+      )}
+
+      {open && !canListen && (
+        <p className="mt-4 rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30">
+          {blocked
+            ? "The browser refused the microphone — allow it, or tap an option above."
+            : "This browser can't listen for speech — tap the correct option above."}
+        </p>
+      )}
+
+      {error && (
+        <p className="mt-4 rounded-xl bg-red-50 px-3.5 py-2.5 text-sm text-red-600 ring-1 ring-red-100 dark:bg-red-500/10 dark:text-red-400 dark:ring-red-500/30">
+          {error}
+        </p>
+      )}
+
+      {open && (
+        <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-zinc-200/70 pt-4 dark:border-zinc-800">
+          <button type="button" onClick={onReplayQuestion} className={quietButton}>
+            <Volume2 className="h-4 w-4" />
+            Repeat question
+          </button>
+          {supported && !blocked && (
             <button
               type="button"
+              aria-pressed={micOn}
               onClick={() => {
                 if (micOn) {
+                  clearQuiet();
                   stop();
-                  void submit(draftRef.current);
                   setMicOn(false);
                   return;
                 }
                 getSpeechEngine().unlock();
                 setMicOn(true);
               }}
-              disabled={!supported || submitting}
-              aria-label={micOn ? "Stop listening" : "Answer by voice"}
-              className={cn(
-                "flex h-14 w-14 shrink-0 items-center justify-center rounded-full shadow-md transition-all duration-200",
-                micOn
-                  ? "animate-pulse bg-red-500 text-white shadow-red-500/30"
-                  : "bg-gradient-to-br from-brand-400 to-brand-500 text-brand-950 shadow-brand-500/25",
-                (!supported || submitting) && "cursor-not-allowed opacity-50"
-              )}
+              className={quietButton}
             >
-              {submitting ? (
-                <Loader2 className="h-6 w-6 animate-spin" />
-              ) : micOn ? (
-                <Square className="h-5 w-5" />
-              ) : (
-                <Mic className="h-6 w-6" />
-              )}
+              {micOn ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+              {micOn ? "Stop listening" : "Answer by voice"}
             </button>
-
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                {listening ? "Listening — say your answer" : "Answer out loud"}
-              </p>
-              <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
-                {!supported
-                  ? "This browser can't listen — type your answer below."
-                  : micOn
-                    ? "Say the option (“letter B”, “the second one”) or the answer itself."
-                    : "Tap the mic, or type your answer below."}
-              </p>
-            </div>
-          </div>
-
-          {(draft || interim) && (
-            <p className="rounded-2xl border border-brand-200 bg-brand-50/60 px-3.5 py-2.5 text-sm text-zinc-800 dark:border-brand-500/30 dark:bg-brand-500/5 dark:text-zinc-100">
-              {draft}
-              {interim && (
-                <span className="text-zinc-400 dark:text-zinc-500">
-                  {draft ? " " : ""}
-                  {interim}
-                </span>
-              )}
-            </p>
           )}
-
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              const text = typed.trim();
-              if (!text) return;
-              setTyped("");
-              void submit(text);
-            }}
-            className="flex items-center gap-2"
-          >
-            <input
-              value={typed}
-              onChange={(event) => setTyped(event.target.value)}
-              placeholder="Or type your answer…"
-              aria-label="Type your answer"
-              maxLength={200}
-              className="w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm text-zinc-900 outline-none transition-colors placeholder:text-zinc-400 focus:border-brand-400 focus:ring-2 focus:ring-brand-200/70 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-brand-500 dark:focus:ring-brand-500/20"
-            />
-            <button
-              type="submit"
-              disabled={submitting || typed.trim().length === 0}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-br from-brand-400 to-brand-500 px-3.5 py-2.5 text-sm font-semibold text-brand-950 shadow-sm transition-all hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Send className="h-4 w-4" />
-              Send
-            </button>
-          </form>
-
-          {error && (
-            <p className="rounded-xl bg-red-50 px-3.5 py-2.5 text-sm text-red-600 ring-1 ring-red-100 dark:bg-red-500/10 dark:text-red-400 dark:ring-red-500/30">
-              {error}
-            </p>
+          {micOn && listening && (
+            <span className="inline-flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+              Say “letter B”, “the second one”, or the answer itself.
+            </span>
           )}
         </div>
       )}

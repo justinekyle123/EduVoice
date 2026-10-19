@@ -834,7 +834,7 @@ function RoomView({
               ) : (
                 <Mic className="h-4 w-4" />
               )}
-              Start live quiz
+              {startingLive ? "Writing and voicing the quiz…" : "Start live quiz"}
             </button>
           </form>
         )}

@@ -14,9 +14,14 @@ require_once dirname(__DIR__) . '/vendor/autoload.php';
 
 use AndroidSmsGateway\Client;
 use AndroidSmsGateway\Domain\Message;
+use Symfony\Component\HttpClient\HttpClient;
+use Symfony\Component\HttpClient\Psr18Client;
 
 /** A PH mobile number without the country code: 9 followed by nine digits. */
 const SMS_PH_MOBILE_PATTERN = '/^9\d{9}$/';
+
+/** Keep both gateway calls inside the app's 20-second request deadline. */
+const SMS_GATEWAY_TIMEOUT_SECONDS = 8.0;
 
 /**
  * Canonical E.164 form of a Philippine mobile number, or null when the input is
@@ -73,7 +78,17 @@ function sms_gateway_client(): Client
         );
     }
 
-    return new Client($username, $password, sms_env('SMS_GATEWAY_URL', Client::DEFAULT_URL));
+    $httpClient = HttpClient::create([
+        'timeout' => SMS_GATEWAY_TIMEOUT_SECONDS,
+        'max_duration' => SMS_GATEWAY_TIMEOUT_SECONDS,
+    ]);
+
+    return new Client(
+        $username,
+        $password,
+        sms_env('SMS_GATEWAY_URL', Client::DEFAULT_URL),
+        new Psr18Client($httpClient)
+    );
 }
 
 /**

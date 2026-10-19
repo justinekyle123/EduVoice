@@ -223,6 +223,13 @@ class SpeechEngine {
    * that cannot be spoken fails fast instead of stalling on silence.
    */
   private geminiBlockedUntil = 0;
+  /**
+   * performance.now() when the last passage finished playing. Speech
+   * recognition reads the microphone, and the microphone hears the speakers:
+   * this timestamp is how the recognizer knows the words it is hearing are the
+   * tutor's, not the student's. Negative infinity until the first clip.
+   */
+  private lastAudioEndAt = Number.NEGATIVE_INFINITY;
 
   // -------------------------------------------------------------------------
   // React glue (useSyncExternalStore)
@@ -252,7 +259,9 @@ class SpeechEngine {
 
   /** Back to idle, keeping the "TTS is unavailable" flag the UI is showing. */
   private setIdle() {
+    const wasActive = this.snapshot.status !== "idle";
     this.setSnapshot({ speakingId: null, status: "idle" });
+    if (wasActive) this.lastAudioEndAt = performance.now();
   }
 
   /** The analyser node that carries the tutor's voice, for visualizers. */
@@ -266,12 +275,17 @@ class SpeechEngine {
   }
 
   /**
-   * True once a chunk is actually on the audio timeline. Voice mode waits for
-   * real sound before letting the student interrupt, so a cough during
-   * synthesis does not cancel the answer.
+   * True while the tutor's voice is playing, and for `graceMs` after it stops.
+   *
+   * Dictation uses this to ignore words that reached the microphone from the
+   * laptop's own speakers. The short tail matters: the browser often finalizes
+   * an utterance on the silence just after a clip ends, and that final result
+   * would otherwise type the last sentence of the tutor's answer into the
+   * student's input.
    */
-  isPlaying(): boolean {
-    return this.snapshot.status === "speaking";
+  isSpeakingOrRecently(graceMs = 700): boolean {
+    if (this.isSpeaking()) return true;
+    return performance.now() - this.lastAudioEndAt < graceMs;
   }
 
   // -------------------------------------------------------------------------

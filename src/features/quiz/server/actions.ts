@@ -384,12 +384,56 @@ export async function startQuizAttempt(input: {
 // Grade
 // ---------------------------------------------------------------------------
 
+/** One question's answer key, as the voice quiz prefetches it. */
+export type QuizAnswerKeyEntry = {
+  questionId: string;
+  type: QuestionType;
+  correctAnswer: string;
+  explanation: string | null;
+};
+
 /**
- * Judge a single answer, for the voice quiz's spoken feedback.
+ * The answer key for a voice quiz, fetched once before the first question.
  *
- * The answers never leave the server while a quiz is being taken — a question
- * reaches the browser without its answer (see `SafeQuestion`) — so "was that
- * right?" has to be asked here rather than worked out client-side. Nothing is
+ * Checking an answer through `gradeQuizAnswer` costs a server-action round trip
+ * (plus Clerk auth and a database query), which is enough to leave the student
+ * looking at "Checking that answer…" between every question. The voice player
+ * prefetches this key while the intro is still being read, then grades locally
+ * with the same `isAnswerCorrect` comparison. The finished attempt is still
+ * graded by `submitQuizAttempt` on the server, so the stored score never trusts
+ * the browser. Ownership is checked here, and the key never includes anything
+ * the quiz page did not already need in order to explain a verdict.
+ */
+export async function getQuizAnswerKey(
+  quizId: string
+): Promise<QuizAnswerKeyEntry[]> {
+  const { userId: clerkId } = await auth();
+  if (!clerkId) throw new Error("Not authenticated");
+  const userId = await requireUserId(clerkId);
+
+  const rows = await db
+    .select({
+      questionId: quizQuestions.id,
+      type: quizQuestions.type,
+      correctAnswer: quizQuestions.correctAnswer,
+      explanation: quizQuestions.explanation,
+    })
+    .from(quizQuestions)
+    .innerJoin(quizzes, eq(quizzes.id, quizQuestions.quizId))
+    .where(and(eq(quizQuestions.quizId, quizId), eq(quizzes.userId, userId)))
+    .orderBy(asc(quizQuestions.order));
+
+  if (rows.length === 0) {
+    throw new Error("That quiz is not part of one of your quizzes");
+  }
+  return rows as QuizAnswerKeyEntry[];
+}
+
+/**
+ * Judge a single answer, for callers that have not prefetched the key.
+ *
+ * A question reaches the browser without its answer (see `SafeQuestion`), so if
+ * the voice quiz's prefetch failed this is the safe fallback. Nothing is
  * written: the attempt is graded again by `submitQuizAttempt` at the end, through
  * the same comparison, so the verdict the student heard and the score they end up
  * with cannot disagree.

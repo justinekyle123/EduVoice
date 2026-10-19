@@ -9,6 +9,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { detectLanguage, speechLangFor } from "../lib/detect";
+import { isStopRequest } from "../lib/interrupt";
 import { openerFor } from "../lib/phrases";
 import { SPEECH_BUDGET } from "../lib/speech";
 import { voiceStyleForMode, type VoiceStyle } from "../lib/voices";
@@ -24,9 +25,11 @@ import { useSpeechRecognition } from "./useSpeechRecognition";
 //   endpointing  the mic level decides when the student has stopped talking, so
 //                the question is sent the moment they pause instead of waiting
 //                for the browser to finalize its text.
-//   barge-in     talking over the tutor stops the audio and takes the turn, the
-//                way you interrupt a person mid-sentence. It arms only once
-//                audio is really playing, and it backs off if the room echoes.
+//   barge-in     saying an explicit stop word ("stop", "wait", "sandali lang",
+//                "hunong sa") stops the audio and takes the turn the way you
+//                interrupt a person mid-sentence. The microphone level alone
+//                never interrupts: a cough, a chair, or the tutor's own voice
+//                leaking through the speakers must not cut an answer off.
 //   one take     reply text goes into the speech engine as it arrives and the
 //                answer is spoken as a single recording, so the voice never
 //                changes tone halfway through it.
@@ -86,17 +89,6 @@ const END_OF_SPEECH_SILENCE_MS = 1200;
 const MIN_SILENCE_WORDS = 3;
 /** RMS above which we count as "the student is talking". */
 const SPEECH_RMS = 0.02;
-/** Clearly-loud speech that may interrupt the tutor (well above echo level). */
-const BARGE_RMS = 0.05;
-/** Let playback settle before barge-in arms, so it can't interrupt itself. */
-const BARGE_ARM_MS = 900;
-const BARGE_ARM_MAX_MS = 3200;
-/** Consecutive loud frames required to count as an interruption (~65ms). */
-const BARGE_FRAMES = 4;
-/** Audio playing for less than this before a barge looks like an echo. */
-const EARLY_BARGE_MS = 1200;
-/** Grace period before talking over a *still composing* reply cancels it. */
-const THINKING_BARGE_MS = 1800;
 /**
  * Characters spoken per reply; the rest stays on screen.
  *
@@ -146,8 +138,12 @@ export function useVoiceSession(options: {
   const { lang, ttsVoice, mode, transport, onTurn, onEnd } = options;
   const engine = useMemo(() => getSpeechEngine(), []);
   const style: VoiceStyle = voiceStyleForMode(mode);
-  /** Fixed opening line for this mode (lib/phrases.ts), or null. */
-  const opener = useMemo(() => openerFor(mode), [mode]);
+  /**
+   * Fixed opening line for this mode (lib/phrases.ts), or null. Chosen once per
+   * call — the transcript shows the same take that is being played, and a
+   * remount (the next time voice mode opens) rolls a fresh one.
+   */
+  const [opener] = useState(() => openerFor(mode));
 
   // Whether the last reply could actually be spoken — the student is told when
   // it could not, instead of being left with unexplained silence.
@@ -188,20 +184,11 @@ export function useVoiceSession(options: {
   const lastUserRef = useRef("");
   const seqRef = useRef(0);
   const turnStartedRef = useRef(0);
-  /** When audio actually started for the current reply. */
-  const playingSinceRef = useRef(0);
-  /** When the reply started being composed (for talking over "thinking"). */
-  const thinkingSinceRef = useRef(0);
   /** Student has said something in the current listening turn. */
   const spokeRef = useRef(false);
   const lastLoudAtRef = useRef(0);
-  const bargeFramesRef = useRef(0);
-  /** Adaptive barge-in: grows when interruptions look like speaker echo. */
-  const bargeArmRef = useRef(BARGE_ARM_MS);
   /** Delay before reopening the mic, doubled after each recognition failure. */
   const restartDelayRef = useRef(120);
-  const earlyBargeRef = useRef(0);
-  const bargeDisabledRef = useRef(false);
   const sessionStartedRef = useRef(0);
   /** Recognition language already attempted, so fallbacks can't loop. */
   const attemptedLangRef = useRef("");
@@ -210,9 +197,11 @@ export function useVoiceSession(options: {
   const onEndRef = useRef(onEnd);
   const onTurnRef = useRef<(meta: VoiceTurnMeta) => void>(() => {});
   const handleFinalRef = useRef<(text: string) => void>(() => {});
+  const handleInterimRef = useRef<(text: string) => void>(() => {});
   const submitRef = useRef<(text: string) => void>(() => {});
   const stopRecognitionRef = useRef<() => void>(() => {});
   const getInterimRef = useRef<() => string>(() => "");
+  const interruptRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     transportRef.current = transport;
@@ -243,9 +232,10 @@ export function useVoiceSession(options: {
   const mic = useMicStream(!muted);
   const micLevel = mic.levelRef;
 
-  const recognition = useSpeechRecognition((finalText) => {
-    handleFinalRef.current(finalText);
-  });
+  const recognition = useSpeechRecognition(
+    (finalText) => handleFinalRef.current(finalText),
+    (interimText) => handleInterimRef.current(interimText)
+  );
   const {
     start: startRecognition,
     abort: abortRecognition,
@@ -255,11 +245,34 @@ export function useVoiceSession(options: {
     getInterim,
   } = recognition;
 
-  /** A completed utterance while listening is one turn. */
+  /**
+   * A completed utterance while listening is one turn. While the tutor is
+   * composing or speaking, the only thing an utterance can do is stop it — and
+   * only when it is an explicit stop request (lib/interrupt.ts), so the tutor's
+   * own voice is never mistaken for the student cutting in.
+   */
   useEffect(() => {
     handleFinalRef.current = (text: string) => {
-      if (phaseRef.current !== "listening") return;
-      submitRef.current(text);
+      if (phaseRef.current === "listening") {
+        submitRef.current(text);
+        return;
+      }
+      if (interruptedRef.current) return;
+      if (isStopRequest(text)) interruptRef.current();
+    };
+  }, []);
+
+  /**
+   * The same check on interim words: the browser may only commit an utterance
+   * after a pause, and a student saying "stop" should not have to wait through
+   * the rest of the sentence to be heard.
+   */
+  useEffect(() => {
+    handleInterimRef.current = (text: string) => {
+      const current = phaseRef.current;
+      if (current !== "speaking" && current !== "thinking") return;
+      if (interruptedRef.current) return;
+      if (isStopRequest(text)) interruptRef.current();
     };
   }, []);
 
@@ -271,12 +284,14 @@ export function useVoiceSession(options: {
     getInterimRef.current = getInterim;
   }, [getInterim]);
 
-  // Keep the recognizer open for the whole listening phase, restarting it
-  // across the browser's own silence timeouts (and across turns). Repeated
-  // failures back off instead of hammering the API.
+  // Keep the recognizer open for the whole call — listening, thinking and
+  // speaking — restarting it across the browser's own silence timeouts (and
+  // across turns). It has to be open while the tutor talks, or there is no way
+  // to hear "stop" over the answer. Repeated failures back off instead of
+  // hammering the API.
   useEffect(() => {
     if (muted || recognitionBlocked) return;
-    if (phase !== "listening" || recognitionListening) return;
+    if (phase === "muted" || recognitionListening) return;
 
     // Some languages simply aren't served (Cebuano on most browsers), so step
     // down to the closest supported one — but only once per language, or the
@@ -291,8 +306,19 @@ export function useVoiceSession(options: {
     }
     attemptedLangRef.current = attempt;
 
+    // While the tutor is talking, words must not be carried across a session
+    // restart: they are the tutor's own voice leaking through the mic, and
+    // keeping them would bury the student's "stop" under them.
     const timer = window.setTimeout(
-      () => startRecognition(attempt, { continuous: true, keepInterim: true }),
+      () =>
+        startRecognition(attempt, {
+          continuous: true,
+          keepInterim: phase === "listening",
+          // The mic must stay open while the tutor talks so "stop" can be
+          // heard. Echo is handled here: only an explicit stop request acts on
+          // those words, and the transcript is kept out of the UI.
+          listenWhileSpeaking: true,
+        }),
       restartDelayRef.current
     );
     return () => window.clearTimeout(timer);
@@ -312,6 +338,26 @@ export function useVoiceSession(options: {
     restartDelayRef.current = Math.min(restartDelayRef.current * 2, 4000);
   }, [recognition.error]);
 
+  /**
+   * A fresh listening turn starts with a fresh transcript.
+   *
+   * The recognizer runs while the tutor speaks so it can hear "stop", which
+   * means it also hears the tutor's own voice. Aborting and clearing on the way
+   * back into listening keeps those echoes out of the student's next turn, and
+   * reopens the session with `keepInterim` on so their words survive a browser
+   * restart. submitTurn() does the same at the start of every reply.
+   */
+  const previousPhaseRef = useRef<VoicePhase>(phase);
+  useEffect(() => {
+    const previous = previousPhaseRef.current;
+    previousPhaseRef.current = phase;
+    if (previous === phase || phase !== "listening") return;
+
+    lastLoudAtRef.current = performance.now();
+    clearInterim();
+    abortRecognition();
+  }, [phase, clearInterim, abortRecognition]);
+
   // -------------------------------------------------------------------------
   // One turn
   // -------------------------------------------------------------------------
@@ -329,9 +375,6 @@ export function useVoiceSession(options: {
       interruptedRef.current = false;
       streamDoneRef.current = false;
       spokeRef.current = false;
-      bargeFramesRef.current = 0;
-      playingSinceRef.current = 0;
-      thinkingSinceRef.current = 0;
       turnStartedRef.current = performance.now();
       // A turn got through, so the mic is working: reset the failure backoff
       // and let the new language be attempted from the top of the chain.
@@ -415,6 +458,9 @@ export function useVoiceSession(options: {
         if (failure) setError(failure);
         busyRef.current = false;
         interruptedRef.current = true;
+        // Drop anything the mic heard while the reply was being prepared so it
+        // cannot appear as the student's next turn.
+        clearInterim();
         setPhase("listening");
       } else if (failure) {
         setError(failure);
@@ -428,7 +474,7 @@ export function useVoiceSession(options: {
   }, [submitTurn]);
 
   // -------------------------------------------------------------------------
-  // Loop: level-driven endpointing, barge-in, phase completion
+  // Loop: level-driven endpointing, stop-word barge-in, phase completion
   // -------------------------------------------------------------------------
 
   /** Drop the current reply and take back the turn. */
@@ -442,10 +488,18 @@ export function useVoiceSession(options: {
     busyRef.current = false;
     streamDoneRef.current = true;
     spokeRef.current = false;
-    playingSinceRef.current = 0;
-    thinkingSinceRef.current = 0;
+    lastLoudAtRef.current = performance.now();
+    // Drop the words that stopped the tutor (and any of its own speech the mic
+    // picked up) instead of letting them become the student's next turn. The
+    // recognizer is restarted by the phase effect once listening resumes.
+    stopRecognitionRef.current();
+    clearInterim();
     setPhase("listening");
-  }, [engine]);
+  }, [engine, clearInterim]);
+
+  useEffect(() => {
+    interruptRef.current = interrupt;
+  }, [interrupt]);
 
   useEffect(() => {
     let raf = 0;
@@ -461,7 +515,6 @@ export function useVoiceSession(options: {
       const current = phaseRef.current;
 
       if (current === "listening") {
-        thinkingSinceRef.current = 0;
         if (level > SPEECH_RMS) {
           spokeRef.current = true;
           lastLoudAtRef.current = now;
@@ -483,83 +536,25 @@ export function useVoiceSession(options: {
         return;
       }
 
-      if (current === "thinking") {
-        // Nothing is playing yet, so there is no echo to worry about: talking
-        // while the tutor is composing means "hold on", and drops the request.
-        if (thinkingSinceRef.current === 0) thinkingSinceRef.current = now;
-        const armed =
-          !bargeDisabledRef.current &&
-          now - thinkingSinceRef.current > THINKING_BARGE_MS;
-        if (armed && level > BARGE_RMS) bargeFramesRef.current += 1;
-        else bargeFramesRef.current = 0;
-
-        if (bargeFramesRef.current >= BARGE_FRAMES) {
-          bargeFramesRef.current = 0;
-          thinkingSinceRef.current = 0;
-          interrupt();
-        }
-        return;
-      }
-
+      // Thinking and speaking are ended by a stop word (handled in the
+      // recognition callbacks above), or by the reply finishing on its own.
       if (current !== "speaking") return;
 
-      thinkingSinceRef.current = 0;
-      const playing = engine.isPlaying();
-      if (!playing) {
-        bargeFramesRef.current = 0;
-        playingSinceRef.current = 0;
-      } else {
-        if (playingSinceRef.current === 0) playingSinceRef.current = now;
-        const armed =
-          !bargeDisabledRef.current &&
-          now - playingSinceRef.current > bargeArmRef.current;
-
-        if (armed && level > BARGE_RMS) bargeFramesRef.current += 1;
-        else bargeFramesRef.current = 0;
-
-        if (bargeFramesRef.current >= BARGE_FRAMES) {
-          bargeFramesRef.current = 0;
-          const playedFor = now - playingSinceRef.current;
-
-          if (playedFor < EARLY_BARGE_MS) {
-            // Interrupting within a second of the tutor starting is almost
-            // always the tutor's own voice leaking into the mic. Raise the bar
-            // instead of cutting the answer off.
-            earlyBargeRef.current += 1;
-            bargeArmRef.current = Math.min(
-              bargeArmRef.current * 2,
-              BARGE_ARM_MAX_MS
-            );
-            if (earlyBargeRef.current >= 3) bargeDisabledRef.current = true;
-          } else {
-            earlyBargeRef.current = 0;
-            interruptedRef.current = true;
-            engine.stop();
-            streamRef.current?.cancel();
-            streamRef.current = null;
-            busyRef.current = false;
-            spokeRef.current = false;
-            playingSinceRef.current = 0;
-            lastLoudAtRef.current = now;
-            setPhase("listening");
-            return;
-          }
-        }
-      }
-
-      // Spoken and finished: listen again.
+      // Spoken and finished: listen again with a clean transcript. Clearing
+      // before the phase change keeps the tutor's own voice — which reached the
+      // mic while it talked — from flashing up as the student's words.
       if (streamDoneRef.current && !engine.isSpeaking()) {
-        playingSinceRef.current = 0;
         busyRef.current = false;
         spokeRef.current = false;
         lastLoudAtRef.current = now;
+        clearInterim();
         setPhase("listening");
       }
     };
 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [engine, micLevel, interrupt]);
+  }, [engine, micLevel, clearInterim]);
 
   // -------------------------------------------------------------------------
   // Opening line
@@ -572,7 +567,7 @@ export function useVoiceSession(options: {
    * The line is fixed, so it is played from the pre-generated bank
    * (lib/phrases.ts → data/phrases) instead of being written and synthesized
    * again — instant, and no TTS request. It goes through the ordinary phase
-   * machine, so the student can talk over it and cut it off like anything else.
+   * machine, so the student can say stop and cut it off like anything else.
    */
   useEffect(() => {
     if (!opener) return;
@@ -665,8 +660,8 @@ export function useVoiceSession(options: {
               ? "Getting your microphone ready…"
               : "Listening — just start talking"
           : phase === "thinking"
-            ? "Thinking…"
-            : "Speaking — talk over me any time";
+            ? "Thinking… say stop to cancel"
+            : "Speaking — say stop to cut in";
 
   return {
     phase,
@@ -685,7 +680,9 @@ export function useVoiceSession(options: {
     voiceNotice: speech.unavailable
       ? "Gemini's voice is unavailable right now, so this reply isn't read aloud — it's on screen instead. Free-tier TTS quota resets within the hour."
       : null,
-    interim: recognition.interim,
+    // Only the student's own turn is shown as a transcript. While the tutor is
+    // talking the recognizer is open for stop words, but its words are echo.
+    interim: phase === "listening" ? recognition.interim : "",
     log,
     turnCount,
     elapsed,

@@ -170,11 +170,26 @@ function matchOptionText(text: string, options: readonly string[]): number | nul
   return fragmentBest;
 }
 
-/** "option b" / "letter sea" / a lone "bee" → the option at that position. */
+/**
+ * "option b" / "letter sea" / a lone "bee" → the option at that position.
+ *
+ * Students rarely answer with the bare letter: "the answer is B" and "I choose
+ * B" are at least as common, and a missed letter used to burn one of the two
+ * "I did not catch that" retries before the quiz moved on. The marker words are
+ * matched with an optional "is" so both forms land on the same option.
+ */
 function matchOptionLetter(text: string, count: number): number | null {
-  const marked = text.match(/\b(?:option|opt|letter|choice|answer)\s+([a-z]+)\b/);
-  const named = marked ? SPOKEN_LETTERS[marked[1]] : undefined;
-  const letter = named ?? SPOKEN_LETTERS[text];
+  const marked = text.match(
+    /\b(?:option|opt|letter|choice|choose|pick|answer|number)\s+(?:is\s+)?([a-z]+)\b/
+  );
+  // "it's b" reaches here as "it s b": normalizeSpeech turns the apostrophe
+  // into a space.
+  const its = text.match(/^(?:it'?s|its|it\s+s)\s+([a-z]+)$/);
+  const bare = text.replace(/\s+please$/, "");
+  const named =
+    (marked ? SPOKEN_LETTERS[marked[1]] : undefined) ??
+    (its ? SPOKEN_LETTERS[its[1]] : undefined);
+  const letter = named ?? SPOKEN_LETTERS[bare];
   if (letter === undefined) return null;
 
   const index = LETTERS.indexOf(letter);
@@ -184,7 +199,7 @@ function matchOptionLetter(text: string, count: number): number | null {
 /** "number two" / "the second one" / a lone "2" → the option at that position. */
 function matchOptionNumber(text: string, count: number): number | null {
   const marked = text.match(
-    /\b(?:option|number|choice|answer|num)\s+(\d|one|two|three|four|five|six|isa|dalawa|tatlo|apat|lima|uno|dos|tres|cuatro|singko)\b/
+    /\b(?:option|number|choice|answer|num)\s+(?:is\s+)?(\d|one|two|three|four|five|six|isa|dalawa|tatlo|apat|lima|uno|dos|tres|cuatro|singko)\b/
   );
   if (marked) {
     const index = toOptionIndex(marked[1], count);

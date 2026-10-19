@@ -288,24 +288,7 @@ export async function generateQuizQuestions(input: {
 // Grading
 // ---------------------------------------------------------------------------
 
-/**
- * Short answers are graded loosely on purpose: a student who writes a fuller
- * sentence containing the expected phrase is right, and spelling casing or
- * surrounding punctuation shouldn't decide a score.
- */
-export function isAnswerCorrect(
-  type: QuestionType,
-  expected: string,
-  given: string
-): boolean {
-  const expectedNorm = normalize(expected);
-  const givenNorm = normalize(given);
-  if (givenNorm.length === 0) return false;
-  if (expectedNorm === givenNorm) return true;
-
-  if (type === "short_answer" && expectedNorm.length >= 4) {
-    return givenNorm.includes(expectedNorm);
-  }
-
-  return false;
-}
+// Re-exported for the server callers that already import it from here. The
+// implementation lives in ./grading so the voice quiz can use the exact same
+// comparison in the browser without pulling the AI client into its bundle.
+export { isAnswerCorrect } from "./grading";

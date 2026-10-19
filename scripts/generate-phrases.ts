@@ -7,8 +7,9 @@
 // are fixed text, both would otherwise be synthesized — and written into
 // data/speech/ — the first time a student heard them.
 //
-//   npm run phrases:generate            → generate anything missing
-//   npm run phrases:generate -- --force → regenerate every line
+//   npm run phrases:generate                      → generate anything missing
+//   npm run phrases:generate -- --force           → regenerate every line
+//   npm run phrases:generate -- --only key1,key2  → render just those keys
 //
 // The npm script bundles this file with esbuild (the app's own code is
 // TypeScript and imports through the `@/` alias, which plain `node` can't
@@ -26,6 +27,29 @@ import { synthesizeSpeechBytes } from "../src/features/chat/server/ttsCore";
 import { hasReadyKey } from "../src/lib/ai/keys";
 
 const force = process.argv.includes("--force");
+
+/**
+ * `--only a,b,c` renders just those keys. Useful right after a line is added:
+ * the bank has many translations, and a single new greeting should not have to
+ * wait behind every other line (or spend the quota they would cost).
+ */
+function parseOnly(): Set<string> | null {
+  const inline = process.argv.find((arg) => arg.startsWith("--only="));
+  const index = process.argv.indexOf("--only");
+  const value = inline
+    ? inline.slice("--only=".length)
+    : index >= 0
+      ? process.argv[index + 1]
+      : undefined;
+  if (!value) return null;
+  const keys = value
+    .split(",")
+    .map((key) => key.trim())
+    .filter(Boolean);
+  return keys.length > 0 ? new Set(keys) : null;
+}
+
+const only = parseOnly();
 
 async function main() {
   if (!process.env.GEMINI_API_KEY?.trim()) {
@@ -48,11 +72,21 @@ async function main() {
   }
 
   const voice = resolveTtsVoice(process.env.GEMINI_TTS_VOICE ?? DEFAULT_TTS_VOICE);
-  console.log(`Phrase bank — voice: ${voice} (${PHRASE_BANK.length} lines)`);
+  const lines = only ? PHRASE_BANK.filter((line) => only.has(line.key)) : PHRASE_BANK;
+
+  if (only && lines.length === 0) {
+    console.error(`No phrase matches --only ${[...only].join(",")}.`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(
+    `Phrase bank — voice: ${voice} (${lines.length} of ${PHRASE_BANK.length} lines)`
+  );
 
   const failed: string[] = [];
 
-  for (const line of PHRASE_BANK) {
+  for (const line of lines) {
     // Only the committed folder counts: a line that happens to be cached in
     // data/speech is still missing from the bank the next clone will speak from.
     if (!force && (await readPhraseAudio(line.key))) {

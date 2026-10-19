@@ -7,9 +7,10 @@ import { getSpeechEngine } from "../lib/speechEngine";
  * Microphone level meter.
  *
  * Voice mode needs a *level*, not audio: the orb should swell when the student
- * speaks, the session should notice when they have stopped talking, and a
- * sustained loud voice should be able to interrupt the tutor. All three read
- * `levelRef` (RMS, 0–1) which is refreshed every animation frame.
+ * speaks and the session should notice when they have stopped talking. Both read
+ * `levelRef` (RMS, 0–1), refreshed every animation frame. Interrupting the tutor
+ * is deliberately *not* level-driven — only an explicit stop word does that (see
+ * lib/interrupt.ts), so noise and speaker echo cannot cut an answer off.
  *
  * The stream feeds an AnalyserNode on the speech engine's AudioContext and is
  * deliberately *not* connected to the speakers — that would echo.

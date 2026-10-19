@@ -97,8 +97,8 @@ const MODE_ACCENTS: Record<string, ModeAccent> = {
  *
  * Deliberately sparse: a slim header, one status chip and the accent colour of
  * the current mode, so nothing competes with the words. Anything secondary —
- * the voice picker hint, the pace badge, the "talk over me" note — is hidden
- * while the tutor is actually talking.
+ * the voice picker hint, the pace badge, the "say stop to cut in" note — is
+ * hidden while the tutor is actually talking.
  */
 export function VoiceMode({
   title,
@@ -367,8 +367,8 @@ export function VoiceMode({
 
           {!busy && (
             <p className="hidden max-w-[280px] text-center text-[11px] leading-5 text-zinc-400 lg:block dark:text-zinc-500">
-              Just talk — pause and I&apos;ll answer. Say anything while I speak
-              to cut in.
+              Just talk — pause and I&apos;ll answer. Say stop, wait or
+              &quot;sandali lang&quot; while I speak to cut in.
             </p>
           )}
         </div>

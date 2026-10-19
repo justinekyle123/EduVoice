@@ -10,7 +10,7 @@
 // (a conditional UPDATE, so only one caller wins), which is what lets the quiz
 // advance without a websocket or a background worker.
 
-import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { db } from "@/lib/db";
 import {
@@ -35,6 +35,7 @@ import {
 import { membershipFor } from "./membership";
 import { readRoomFile } from "./files";
 import { hasQuestionAudio } from "./quizAudio";
+import { renderRoomQuizVoice } from "./voiceRender";
 import {
   MANUAL_LIMITS,
   normalizeManualQuestion,
@@ -126,6 +127,11 @@ export type RoomLiveState = {
   myReady: boolean;
   /** True once every non-host member has readied up. */
   allReady: boolean;
+  /**
+   * How many questions already have a pre-rendered clip, for the waiting room.
+   * Null outside the lobby — there is nothing to promise once the round is on.
+   */
+  voiceClips: { ready: number; total: number } | null;
   /** The room roster, for the waiting-room list and host controls. */
   members: {
     userId: string;
@@ -458,6 +464,17 @@ export async function startRoomLiveQuiz(input: {
     )
     .returning({ id: quizQuestions.id });
 
+  // Read the questions into voice now, while the host is still waiting here, so
+  // the round plays continuously instead of synthesizing each line against the
+  // shared clock. A failed clip is harmless: that question is read live.
+  await renderRoomQuizVoice({
+    roomId: input.roomId,
+    questions: inserted.map((row, index) => ({
+      id: row.id,
+      question: generated.questions[index]?.question ?? "",
+    })),
+  });
+
   const now = new Date();
   const [session] = await db
     .insert(roomQuizSessions)
@@ -576,6 +593,19 @@ export async function startManualRoomLiveQuiz(input: {
     )
     .returning({ id: quizQuestions.id });
 
+  // A question the host did not give a clip to is voiced here, under the room's
+  // own audio folder, so the round is read without a synthesis pause between
+  // questions. Host clips are left exactly as they were dropped.
+  const unvoiced = inserted
+    .map((row, index) => ({ id: row.id, question: questions[index].question, audioFile: questions[index].audioFile }))
+    .filter((question) => !question.audioFile);
+  if (unvoiced.length > 0) {
+    await renderRoomQuizVoice({
+      roomId: input.roomId,
+      questions: unvoiced.map(({ id, question }) => ({ id, question })),
+    });
+  }
+
   const now = new Date();
   const [session] = await db
     .insert(roomQuizSessions)
@@ -649,6 +679,21 @@ export async function replayRoomLiveQuiz(input: {
     .where(
       and(eq(roomQuizSessions.roomId, input.roomId), ne(roomQuizSessions.status, "ended"))
     );
+
+  // A repeat reuses the stored questions but not necessarily their clips: an
+  // older round (or one whose render failed) has questions without audio. Voice
+  // them now, while the old round is already closed, so the replay reads as
+  // smoothly as the first run.
+  const unvoiced = questions.filter((question) => !question.audioFile);
+  if (unvoiced.length > 0) {
+    await renderRoomQuizVoice({
+      roomId: input.roomId,
+      questions: unvoiced.map((question) => ({
+        id: question.id,
+        question: question.question,
+      })),
+    });
+  }
 
   const questionSeconds = clampQuestionSeconds(
     input.questionSeconds ?? previous?.questionSeconds
@@ -783,6 +828,22 @@ export async function startRoomLiveSession(roomId: string) {
     throw new Error("Everyone has to press ready before the quiz can start");
   }
 
+  // Audio is a precondition, not a hope: any question still without a clip is
+  // rendered now, while everyone is in the waiting room, so the round never
+  // stops to synthesize between questions. A failure still starts the round —
+  // the client reads that question live instead.
+  const questions = await loadQuestions(session.quizId);
+  const unvoiced = questions.filter((question) => !question.audioFile);
+  if (unvoiced.length > 0) {
+    await renderRoomQuizVoice({
+      roomId: session.roomId,
+      questions: unvoiced.map((question) => ({
+        id: question.id,
+        question: question.question,
+      })),
+    });
+  }
+
   const now = new Date();
   const [updated] = await db
     .update(roomQuizSessions)
@@ -837,15 +898,29 @@ export async function getRoomLiveState(roomId: string): Promise<RoomLiveState | 
 
   // Everything after the session is independent, so it goes out as one batch:
   // a waiting-room poll is one membership lookup, one session read and this.
-  const [questions, [quizRow], responseRows, readiness] = await Promise.all([
-    isLobby ? Promise.resolve<QuestionRows>([]) : loadQuestions(session.quizId),
-    db
-      .select({ title: quizzes.title })
-      .from(quizzes)
-      .where(eq(quizzes.id, session.quizId)),
-    isLobby ? Promise.resolve<ResponseRows>([]) : loadResponses(session.id),
-    readinessFor(session, isLobby),
-  ]);
+  const [questions, [quizRow], responseRows, readiness, unvoicedRows] =
+    await Promise.all([
+      isLobby ? Promise.resolve<QuestionRows>([]) : loadQuestions(session.quizId),
+      db
+        .select({ title: quizzes.title })
+        .from(quizzes)
+        .where(eq(quizzes.id, session.quizId)),
+      isLobby ? Promise.resolve<ResponseRows>([]) : loadResponses(session.id),
+      readinessFor(session, isLobby),
+      // Only the waiting room shows voice readiness, so this count costs nothing
+      // during a round.
+      isLobby
+        ? db
+            .select({ value: sql<number>`count(*)::int` })
+            .from(quizQuestions)
+            .where(
+              and(
+                eq(quizQuestions.quizId, session.quizId),
+                isNull(quizQuestions.audioFile)
+              )
+            )
+        : Promise.resolve<{ value: number }[]>([]),
+    ]);
 
   const question = isLobby ? null : questions[session.currentIndex] ?? null;
 
@@ -910,6 +985,15 @@ export async function getRoomLiveState(roomId: string): Promise<RoomLiveState | 
     readyUserIds: readiness.readyUserIds,
     myReady: readiness.readyUserIds.includes(userId),
     allReady: readiness.allReady,
+    voiceClips: isLobby
+      ? {
+          ready: Math.max(
+            session.questionCount - (unvoicedRows[0]?.value ?? 0),
+            0
+          ),
+          total: session.questionCount,
+        }
+      : null,
     members: readiness.members,
     myAnswer: mine?.answer ?? null,
     myCorrect: revealed ? mine?.isCorrect ?? null : null,
@@ -1004,6 +1088,44 @@ export async function submitRoomLiveAnswer(input: {
         responseMs: sql`excluded.response_ms`,
       },
     });
+
+  // Everyone playing has now answered: close the question rather than leaving
+  // the room watching a clock with nothing left to hear. The reveal is held for
+  // its moment and then opens the next question on its own, so the round moves
+  // like the quiz page's voice quiz. The host is excluded the same way the ready
+  // list excludes them — they run the round and may not be answering.
+  const [players, answeredRows] = await Promise.all([
+    db
+      .select({ userId: studyRoomMembers.userId, role: studyRoomMembers.role })
+      .from(studyRoomMembers)
+      .where(eq(studyRoomMembers.roomId, input.roomId)),
+    db
+      .select({ userId: roomQuizResponses.userId })
+      .from(roomQuizResponses)
+      .where(
+        and(
+          eq(roomQuizResponses.sessionId, session.id),
+          eq(roomQuizResponses.questionIndex, input.questionIndex)
+        )
+      ),
+  ]);
+  const required = players.filter((player) => player.role !== "owner");
+  const answered = new Set(answeredRows.map((row) => row.userId));
+  if (
+    required.length > 0 &&
+    required.every((player) => answered.has(player.userId))
+  ) {
+    await db
+      .update(roomQuizSessions)
+      .set({ status: "reveal", revealedAt: new Date() })
+      .where(
+        and(
+          eq(roomQuizSessions.id, session.id),
+          eq(roomQuizSessions.status, "question"),
+          eq(roomQuizSessions.currentIndex, input.questionIndex)
+        )
+      );
+  }
 
   return { accepted: true as const, isCorrect };
 }
