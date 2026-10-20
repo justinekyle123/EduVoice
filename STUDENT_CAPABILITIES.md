@@ -139,11 +139,15 @@ Everything is in **English, Filipino, or Cebuano** unless stated otherwise — t
 
 **Voice quiz** (the same actions are grouped under **Part 2 — G**)
 
-- Press **Start the voice quiz** — each question is **read aloud**, you **answer out loud**, and it moves on by itself.
-- Say **"repeat"**, **"skip"**, or **"stop"** at any time — or press the **Repeat question** / **Skip** buttons.
-- Watch the **progress segments**, stage orb, and what it heard ("…you said …").
-- Get instant feedback: **Correct** or **Not this one** with the right answer and an explanation.
-- Can't be heard, or the mic keeps dropping? **Tap an option or type a short answer at any time** while the question is read aloud or listening.
+- Press **Start the voice quiz** — the first question is **read aloud immediately** (no long instruction clip).
+- The **microphone opens with the question**, exactly like the room quiz; whatever it hears while the question is playing (and for a moment after) is filtered out, so the read-aloud is never taken as your answer.
+- A **30-second countdown** starts only when the reading of that question finishes, exactly like the room quiz.
+- **Answer by voice** while the countdown runs, or **tap an option**, type a short answer, use **Repeat question**, **Stop listening** / **Answer by voice**, or **Skip**.
+- Watch the **progress segments**, the countdown bar and red seconds chip in the last 5 s, the stage orb, and what it heard ("…you said …").
+- Get the verdict: **Correct**, **Not this one**, or **No answer** when the countdown runs out — with the right answer, the explanation, the correct option highlighted, and a pre-recorded **correct** or **wrong** line played aloud (the same clips the room quiz uses).
+- The verdict stays up for **8 seconds**, then the next question starts by itself; the last one plays the closing line and adds up your score.
+- **Silence is never marked wrong**: running out of time reveals the answer as unanswered (no wrong-answer line) and moves on. **Skip** does the same on purpose.
+- Can't be heard, or the mic keeps dropping? **Tap an option or type a short answer at any time while the countdown runs** — a tap is never disabled while the question is open.
 - **Leave voice quiz** at any time.
 
 ### 10. Documents page — `/dashboard/documents`
@@ -268,15 +272,15 @@ Everything is in **English, Filipino, or Cebuano** unless stated otherwise — t
 
 - Watch the **stage orb** (reading / listening / checking / verdict) with its label and hint, and the **question progress segments** across the top.
 - Hear/read the question (auto-read aloud) and press **Repeat question** to hear it again.
-- Watch the **countdown bar** and seconds chip (turns red in the last 5 s).
+- See **Reading…** while the tutor speaks — the **countdown bar** and seconds chip (turns red in the last 5 s) only start ticking once the audio actually finishes, so the question's time is never spent listening. The server measures the rendered clip and sets the clock ahead of it, so this holds on every screen.
 - **Answer by voice**: the mic opens with the question — say the option ("letter B", "the second one") or the answer itself; it is sent after a short pause. **Stop listening** / **Answer by voice** toggles the mic.
 - **Or tap an option** in its lettered card (A, B, C…) — a tap always wins over the mic.
 - **Or type a short answer** ("Type your answer") and press **Answer**.
 - See live status: the words heard so far, "Answer locked in — you said …", "n of m answered".
 - See the **Live results** board (ranks, correct counts) and **This question** panel with everyone's answers (✓/✗) after the question closes.
-- Host controls: **Reveal** (show the correct option, answer and explanation), **Skip / Next**, **End** the session.
-- After reveal: the **verdict** (Correct / Not this one — you said …, the answer, the explanation) replaces the answering card.
-- The round **moves on by itself**: once every other member has answered the question closes early (otherwise the clock closes it), and the reveal opens the next question automatically — nothing to press.
+- Host controls: **Reveal** (show the correct option, answer and explanation) — only enabled once the countdown has ended — **Skip / Next**, **End** the session.
+- After reveal: the **verdict** (Correct / Not this one — you said …, the answer, the explanation) replaces the answering card, and your answer is announced out loud with a pre-recorded **correct** or **wrong** line (a different take each time) — the same voice clips the quiz page's voice quiz uses.
+- The round **moves on by itself**: the question always runs its full countdown (answering early does not cut it short), then the reveal opens the next question automatically — nothing to press.
 - Watch the **final board** when it ends; the host can **replay**; **Back to room** closes it.
 
 ### 15. Room history — `/dashboard/rooms/{roomId}/history`
@@ -370,9 +374,10 @@ Everything is in **English, Filipino, or Cebuano** unless stated otherwise — t
 
 ### G. Voice quiz
 
-- Choose the **Voice quiz** mode for any quiz; questions are **read aloud**, answers given **out loud**, auto-advance.
-- Say **"repeat" / "skip" / "stop"** or use the buttons.
-- Get instant **Correct / Not this one** feedback with the answer and explanation.
+- Choose the **Voice quiz** mode for any quiz; questions are **read aloud**, the **30 s countdown** starts after the reading, and answers are given **out loud**, by tap, or typed.
+- Answer on the **same card as the manual quiz** (lettered option buttons, typed field, progress segments). The option buttons stay **clickable at every stage** — while the question is being read, during the countdown, and after a stalled mic — a tap during the reading just ends the clip and reveals.
+- Use **Repeat question**, **Skip**, or the mic toggle; the **correct/wrong** line plays with the reveal, and the next question follows automatically.
+- The answer is revealed as **Correct / Not this one / No answer** with the right answer and explanation, the same as the room quiz.
 - Fallback to **clicking/typing answers** when there is no mic (questions still spoken).
 
 ### H. Document Q&A

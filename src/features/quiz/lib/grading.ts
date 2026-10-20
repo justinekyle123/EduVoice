@@ -6,7 +6,7 @@ import type { QuestionType } from "./generate";
 // `submitQuizAttempt` before anything is stored or scored. The voice quiz also
 // needs a verdict between questions, and asking the server for one made every
 // answer wait on a round trip — so it prefetches the answer key once and uses
-// this same comparison locally (see components/VoiceQuizPlayer.tsx). Sharing the
+// this same comparison locally (see components/VoiceQuizSession.tsx). Sharing the
 // function is what keeps the spoken verdict and the final score identical.
 //
 // Client-safe: no AI client, no filesystem, no database.

@@ -12,6 +12,7 @@ import {
   FileText,
   Loader2,
   Mic,
+  MicOff,
   Paperclip,
   RotateCcw,
   Sparkles,
@@ -25,14 +26,22 @@ import {
 } from "@/features/voice-nav/hooks/useVoiceNavCommands";
 import type { PageCommand } from "@/features/voice-nav/context";
 import { getRoomState } from "@/features/rooms/server/actions";
-import { useSpeechRecognition } from "@/features/chat/hooks/useSpeechRecognition";
+import { useVoiceNav } from "@/features/voice-nav/context";
 import { getSpeechEngine } from "@/features/chat/lib/speechEngine";
-import { VoiceQuizPlayer } from "./VoiceQuizPlayer";
+import {
+  QUIZ_CORRECT_KEYS,
+  QUIZ_WRONG_KEYS,
+  type QuizLineKey,
+} from "@/features/chat/lib/phrases";
+import { isAnswerCorrect } from "../lib/grading";
+import { VoiceQuizSession } from "./VoiceQuizSession";
+import { useQuestionVoice } from "./useQuestionVoice";
 import {
   generateQuiz,
   generateQuizFromFile,
   getRecentAttempts,
   getRecentQuizzes,
+  gradeQuizAnswer,
   startQuizAttempt,
   submitQuizAttempt,
   type QuizAnswerKeyEntry,
@@ -54,6 +63,14 @@ type AttemptResult = Awaited<ReturnType<typeof submitQuizAttempt>>;
 type RecentQuiz = Awaited<ReturnType<typeof getRecentQuizzes>>[number];
 type RecentAttempt = Awaited<ReturnType<typeof getRecentAttempts>>[number];
 type AudioStatus = "ready" | "quota" | "unavailable";
+
+/** One card's checked answer, from the prefetched key or the grader. */
+type CheckedAnswer = {
+  given: string;
+  correct: boolean;
+  correctAnswer: string;
+  explanation: string | null;
+};
 
 const QUESTION_LABELS: Record<string, string> = {
   multiple_choice: "Multiple choice",
@@ -107,6 +124,11 @@ export function QuizUI({
   const [attemptId, setAttemptId] = useState<string | null>(null);
   const [audioStatus, setAudioStatus] = useState<AudioStatus>("ready");
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  // Every card that has been checked, so the verdict and its spoken line are
+  // shown on the card the student is looking at (not only after submitting).
+  const [checkedAnswers, setCheckedAnswers] = useState<
+    Record<string, CheckedAnswer>
+  >({});
   // Manual quiz position. Questions are shown one card at a time, like the
   // flashcard review, rather than as one long scrolling list.
   const [current, setCurrent] = useState(0);
@@ -120,6 +142,22 @@ export function QuizUI({
     retakeQuizId ? "start" : null
   );
   const [error, setError] = useState<string | null>(null);
+
+  // The answers as they are written, readable from callbacks that run after a
+  // state update (the voice hook and the per-card checker).
+  const answersRef = useRef<Record<string, string>>({});
+  const checkedRef = useRef<Record<string, CheckedAnswer>>({});
+  const checkSeqRef = useRef<Record<string, number>>({});
+  const checkAnswerRef = useRef<(question: SafeQuestion, given: string) => void>(
+    () => {}
+  );
+  const verdictAudioRef = useRef<HTMLAudioElement | null>(null);
+  const lastVerdictRef = useRef<QuizLineKey | null>(null);
+
+  const answerKeyMap = useMemo(
+    () => new Map(answerKey.map((entry) => [entry.questionId, entry])),
+    [answerKey]
+  );
 
   const refreshHistory = useCallback(async () => {
     const [quizzes, attempts] = await Promise.all([
@@ -173,6 +211,13 @@ export function QuizUI({
       setAttemptId(next.attemptId);
       setAudioStatus((next as { audioStatus?: AudioStatus }).audioStatus ?? "ready");
       setAnswers({});
+      answersRef.current = {};
+      setCheckedAnswers({});
+      checkedRef.current = {};
+      checkSeqRef.current = {};
+      lastVerdictRef.current = null;
+      verdictAudioRef.current?.pause();
+      verdictAudioRef.current = null;
       setCurrent(0);
       setResult(null);
       setError(null);
@@ -295,6 +340,8 @@ export function QuizUI({
   }
 
   function handleSubmit() {
+    voice.stop();
+    stopVerdict();
     return gradeAttempt(
       questions.map((question) => ({
         questionId: question.id,
@@ -307,9 +354,6 @@ export function QuizUI({
     (answers[question.id] ?? "").trim().length > 0
   ).length;
 
-  // Read only to tell the student, before they pick voice mode, whether this
-  // browser can listen at all; the microphone itself belongs to the player.
-  const { supported: micSupported } = useSpeechRecognition(() => {});
   const withoutClips = questions.filter((question) => !question.audioFile).length;
 
   // Voice Navigation Mode (feature 6.14): the quiz exposes its own commands so a
@@ -390,9 +434,149 @@ export function QuizUI({
   );
   useVoiceNavCommands("quiz", voiceCommands);
 
-  const selectAnswer = useCallback((questionId: string, value: string) => {
-    setAnswers((prev) => ({ ...prev, [questionId]: value }));
+  /**
+   * Record an answer and check it straight away. The manual quiz keeps its
+   * Previous/Next navigation, so a card is checked when it is answered rather
+   * than only at submit; the final score is still graded by the server.
+   */
+  const applyAnswer = useCallback((question: SafeQuestion, value: string) => {
+    answersRef.current = { ...answersRef.current, [question.id]: value };
+    setAnswers((prev) => ({ ...prev, [question.id]: value }));
+    // The same option tapped twice (or the keyboard's number key) must not
+    // replay the verdict line.
+    if (checkedRef.current[question.id]?.given === value) return;
+    void checkAnswerRef.current(question, value);
   }, []);
+
+  /** Typing updates the draft only; the Check button (or Enter) checks it. */
+  function updateAnswer(questionId: string, value: string) {
+    answersRef.current = { ...answersRef.current, [questionId]: value };
+    setAnswers((prev) => ({ ...prev, [questionId]: value }));
+    if (!checkedRef.current[questionId]) return;
+    const next = { ...checkedRef.current };
+    delete next[questionId];
+    checkedRef.current = next;
+    setCheckedAnswers(next);
+  }
+
+  /**
+   * Check one answer. The key arrives with the attempt, so this is normally a
+   * local comparison; `gradeQuizAnswer` is the fallback when it is missing.
+   */
+  async function checkAnswer(question: SafeQuestion, given: string) {
+    const trimmed = given.trim();
+    if (!trimmed) return;
+    if (checkedRef.current[question.id]?.given === trimmed) return;
+
+    // Take the microphone and the reading out of the way before the verdict
+    // line plays, so the recognizer cannot hear "correct" as a new answer.
+    voice.stop();
+
+    const seq = (checkSeqRef.current[question.id] ?? 0) + 1;
+    checkSeqRef.current[question.id] = seq;
+
+    const local = answerKeyMap.get(question.id);
+    let verdict: {
+      correct: boolean;
+      correctAnswer: string;
+      explanation: string | null;
+    } | null = null;
+
+    if (local) {
+      verdict = {
+        correct: isAnswerCorrect(local.type, local.correctAnswer, trimmed),
+        correctAnswer: local.correctAnswer,
+        explanation: local.explanation,
+      };
+    } else {
+      try {
+        verdict = await Promise.race([
+          gradeQuizAnswer({ questionId: question.id, userAnswer: trimmed }),
+          new Promise<never>((_, reject) => {
+            setTimeout(
+              () => reject(new Error("Answer checking timed out")),
+              8_000
+            );
+          }),
+        ]);
+      } catch (err) {
+        console.warn("[quiz] could not check that answer:", err);
+        return;
+      }
+    }
+
+    // A newer tap (or a changed answer) wins over this response.
+    if (checkSeqRef.current[question.id] !== seq) return;
+    if ((answersRef.current[question.id] ?? "").trim() !== trimmed) return;
+
+    const next = {
+      ...checkedRef.current,
+      [question.id]: { given: trimmed, ...verdict },
+    };
+    checkedRef.current = next;
+    setCheckedAnswers(next);
+    playVerdict(verdict.correct);
+  }
+
+  /** The room quiz's verdict phrases, a different take each time. */
+  function playVerdict(correct: boolean) {
+    const keys = correct ? QUIZ_CORRECT_KEYS : QUIZ_WRONG_KEYS;
+    const previous = lastVerdictRef.current;
+    const pool = keys.filter((key) => key !== previous);
+    const choices = pool.length > 0 ? pool : keys;
+    const key = choices[Math.floor(Math.random() * choices.length)];
+    lastVerdictRef.current = key;
+
+    stopVerdict();
+    const audio = new Audio(`/api/chat/speech/${key}`);
+    verdictAudioRef.current = audio;
+    const clear = () => {
+      if (verdictAudioRef.current === audio) verdictAudioRef.current = null;
+    };
+    audio.onended = clear;
+    audio.onerror = clear;
+    void audio.play().catch(clear);
+  }
+
+  function stopVerdict() {
+    const audio = verdictAudioRef.current;
+    verdictAudioRef.current = null;
+    if (!audio) return;
+    audio.onended = null;
+    audio.onerror = null;
+    audio.pause();
+  }
+
+  /** A voice answer is already mapped onto the card; check it like a tap. */
+  function handleVoiceAnswer(question: SafeQuestion, answer: string) {
+    applyAnswer(question, answer);
+    return true;
+  }
+
+  const currentQuestion = questions[current] ?? null;
+  const voice = useQuestionVoice({
+    active: phase === "taking",
+    quizId,
+    question: currentQuestion,
+    position: current,
+    total: questions.length,
+    onAnswer: handleVoiceAnswer,
+  });
+
+  useEffect(() => {
+    checkAnswerRef.current = checkAnswer;
+  });
+
+  // The quiz owns the microphone while a card is open; voice navigation would
+  // otherwise open a second recognizer in the same tab.
+  const { suspendListening, resumeListening } = useVoiceNav();
+  useEffect(() => {
+    if (phase !== "taking") return;
+    suspendListening();
+    return () => resumeListening();
+  }, [phase, suspendListening, resumeListening]);
+
+  useEffect(() => () => stopVerdict(), []);
 
   // Keyboard shortcuts for the card-at-a-time manual quiz: number keys pick an
   // option, the arrow keys move between cards, Enter advances. Ignored while the
@@ -424,13 +608,13 @@ export function QuizUI({
       const option = (question?.options ?? [])[slot - 1];
       if (question && option) {
         event.preventDefault();
-        selectAnswer(question.id, option);
+        applyAnswer(question, option);
       }
     }
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [phase, questions, current, selectAnswer]);
+  }, [phase, questions, current, applyAnswer]);
 
   // -------------------------------------------------------------------------
   // Choosing how to take it
@@ -456,8 +640,9 @@ export function QuizUI({
             {quizTitle || "Your quiz"}
           </h1>
           <p className="mt-2 max-w-xl text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-            How do you want to take it? Both modes ask the same questions, and the
-            score lands in the same place.
+            How do you want to take it? Both modes read the questions aloud and
+            accept a spoken or tapped answer, and the score lands in the same
+            place. Manual keeps Previous/Next; voice runs hands-free.
           </p>
           {audioStatus === "quota" && (
             <p className="mt-4 rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30">
@@ -489,8 +674,8 @@ export function QuizUI({
                   Manual quiz
                 </span>
                 <span className="mt-1 block text-xs leading-5 text-zinc-500 dark:text-zinc-400">
-                  Read the questions and answer on screen — the way a quiz normally
-                  works.
+                  Hear each question, then answer by voice or on screen. Move back
+                  and forth as you like; every card is checked as you answer.
                 </span>
               </span>
             </button>
@@ -530,7 +715,7 @@ export function QuizUI({
               ` ${withoutClips} of them will be spoken live instead.`}
           </p>
 
-          {!micSupported && (
+          {!voice.supported && (
             <p className="mt-3 rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30">
               This browser cannot listen for speech, so voice mode will ask you to
               pick your answers instead — the questions are still read aloud.
@@ -565,7 +750,7 @@ export function QuizUI({
 
   if (phase === "voice" && quizId) {
     return (
-      <VoiceQuizPlayer
+      <VoiceQuizSession
         quizId={quizId}
         quizTitle={quizTitle || "Your quiz"}
         questions={questions}
@@ -585,19 +770,24 @@ export function QuizUI({
     const questionId = question?.id ?? "";
     const total = questions.length;
     const selected = question ? answers[question.id] ?? "" : "";
+    const verdict = checkedAnswers[questionId];
     const isFirst = current === 0;
     const isLast = current >= total - 1;
     const blanks = questions.filter(
       (entry) => (answers[entry.id] ?? "").trim().length === 0
     ).length;
 
-    const goToPrevious = () => setCurrent((index) => Math.max(0, index - 1));
-    const goToNext = () => setCurrent((index) => Math.min(total - 1, index + 1));
+    const goTo = (index: number) => {
+      stopVerdict();
+      setCurrent(index);
+    };
+    const goToPrevious = () => goTo(Math.max(0, current - 1));
+    const goToNext = () => goTo(Math.min(total - 1, current + 1));
     const goToFirstBlank = () => {
       const index = questions.findIndex(
         (entry) => (answers[entry.id] ?? "").trim().length === 0
       );
-      if (index >= 0) setCurrent(index);
+      if (index >= 0) goTo(index);
     };
 
     return (
@@ -607,6 +797,8 @@ export function QuizUI({
             <button
               type="button"
               onClick={() => {
+                voice.stop();
+                stopVerdict();
                 setPhase("lobby");
                 setCurrent(0);
               }}
@@ -640,7 +832,7 @@ export function QuizUI({
                 <button
                   key={entry.id}
                   type="button"
-                  onClick={() => setCurrent(index)}
+                  onClick={() => goTo(index)}
                   aria-label={`Go to question ${index + 1}`}
                   aria-current={active ? "true" : undefined}
                   className={cn(
@@ -689,37 +881,147 @@ export function QuizUI({
               {question?.question}
             </p>
 
+            {/* The voice layer on the manual card: every card is read aloud, and
+                the microphone opens when the reading is over. Tapping above is
+                always available and never waits for the voice stage. */}
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  stopVerdict();
+                  voice.repeat();
+                }}
+                className={cn(quietButton, "px-3 py-2 text-xs")}
+              >
+                {voice.reading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RotateCcw className="h-3.5 w-3.5" />
+                )}
+                {voice.reading ? "Playing question…" : "Play question"}
+              </button>
+
+              {voice.supported && !voice.blocked && !voice.reading && (
+                <button
+                  type="button"
+                  onClick={() => (voice.paused ? voice.resume() : voice.stop())}
+                  className={cn(
+                    "inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium transition-colors",
+                    voice.paused
+                      ? "border-zinc-300 text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                      : "border-red-200 text-red-600 hover:bg-red-50 dark:border-red-500/30 dark:text-red-400 dark:hover:bg-red-500/10"
+                  )}
+                >
+                  {voice.paused ? (
+                    <Mic className="h-3.5 w-3.5" />
+                  ) : (
+                    <MicOff className="h-3.5 w-3.5" />
+                  )}
+                  {voice.paused ? "Answer by voice" : "Stop listening"}
+                </button>
+              )}
+
+              {voice.listening && !voice.reading && (
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-brand-700 dark:text-brand-400">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand-500" />
+                  Listening…
+                </span>
+              )}
+            </div>
+
+            {voice.heard && !voice.reading && (
+              <p className="mt-3 flex items-start gap-2 rounded-xl bg-zinc-50 px-3.5 py-2.5 text-xs leading-5 text-zinc-600 ring-1 ring-zinc-100 dark:bg-zinc-800 dark:text-zinc-300 dark:ring-zinc-700">
+                <Mic className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-600 dark:text-brand-400" />
+                <span className="min-w-0">“{voice.heard}”</span>
+              </p>
+            )}
+
+            {voice.notice && (
+              <p className="mt-3 rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30">
+                {voice.notice}
+              </p>
+            )}
+
+            {voice.error && (
+              <p className="mt-3 rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30">
+                {voice.error.message}
+              </p>
+            )}
+
+            {!voice.supported && (
+              <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+                This browser can&apos;t listen for speech — tap an option or type
+                your answer. The questions are still read aloud.
+              </p>
+            )}
+
             {question?.type === "short_answer" ? (
-              <input
-                value={selected}
-                onChange={(event) => selectAnswer(questionId, event.target.value)}
-                placeholder="Type your answer"
-                aria-label="Your answer"
-                className={cn(field, "mt-5 text-base")}
-              />
+              <div className="mt-5 flex flex-wrap items-start gap-2">
+                <input
+                  value={selected}
+                  onChange={(event) => updateAnswer(questionId, event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" || !question) return;
+                    event.preventDefault();
+                    void checkAnswer(question, selected);
+                  }}
+                  placeholder="Type your answer"
+                  aria-label="Your answer"
+                  className={cn(field, "min-w-0 flex-1 text-base")}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (question) void checkAnswer(question, selected);
+                  }}
+                  disabled={selected.trim().length === 0}
+                  className={cn(quietButton, "shrink-0")}
+                >
+                  <Check className="h-4 w-4" />
+                  Check
+                </button>
+              </div>
             ) : (
               <div className="mt-5 space-y-2.5">
                 {(question?.options ?? []).map((option, index) => {
                   const isSelected = selected === option;
+                  const isCorrectOption =
+                    verdict !== undefined &&
+                    verdict.correctAnswer.trim().toLowerCase() ===
+                      option.trim().toLowerCase();
+                  const isWrongPick =
+                    verdict !== undefined &&
+                    !verdict.correct &&
+                    verdict.given === option;
                   return (
                     <button
                       key={option}
                       type="button"
-                      onClick={() => selectAnswer(questionId, option)}
+                      onClick={() => {
+                        if (question) applyAnswer(question, option);
+                      }}
                       aria-pressed={isSelected}
                       className={cn(
                         "group flex w-full items-center gap-3.5 rounded-2xl border px-4 py-3.5 text-left text-sm transition-all duration-200",
-                        isSelected
-                          ? "border-brand-400 bg-brand-50 ring-1 ring-brand-200 dark:border-brand-500/60 dark:bg-brand-500/10 dark:ring-brand-500/25"
-                          : "border-zinc-200 hover:border-brand-300 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:border-brand-500/40 dark:hover:bg-zinc-800/60"
+                        isCorrectOption
+                          ? "border-emerald-400 bg-emerald-50 ring-1 ring-emerald-200 dark:border-emerald-500/50 dark:bg-emerald-500/10 dark:ring-emerald-500/25"
+                          : isWrongPick
+                            ? "border-red-400 bg-red-50 ring-1 ring-red-200 dark:border-red-500/50 dark:bg-red-500/10 dark:ring-red-500/25"
+                            : isSelected
+                              ? "border-brand-400 bg-brand-50 ring-1 ring-brand-200 dark:border-brand-500/60 dark:bg-brand-500/10 dark:ring-brand-500/25"
+                              : "border-zinc-200 hover:border-brand-300 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:border-brand-500/40 dark:hover:bg-zinc-800/60"
                       )}
                     >
                       <span
                         className={cn(
                           "flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border text-xs font-bold transition-colors",
-                          isSelected
-                            ? "border-brand-400 bg-brand-400 text-brand-950"
-                            : "border-zinc-200 text-zinc-500 group-hover:border-brand-300 group-hover:text-brand-700 dark:border-zinc-700 dark:text-zinc-400 dark:group-hover:text-brand-300"
+                          isCorrectOption
+                            ? "border-emerald-400 bg-emerald-400 text-emerald-950"
+                            : isWrongPick
+                              ? "border-red-400 bg-red-400 text-red-950"
+                              : isSelected
+                                ? "border-brand-400 bg-brand-400 text-brand-950"
+                                : "border-zinc-200 text-zinc-500 group-hover:border-brand-300 group-hover:text-brand-700 dark:border-zinc-700 dark:text-zinc-400 dark:group-hover:text-brand-300"
                         )}
                       >
                         {String.fromCharCode(65 + index)}
@@ -727,19 +1029,73 @@ export function QuizUI({
                       <span
                         className={cn(
                           "min-w-0 flex-1 leading-6",
-                          isSelected
-                            ? "font-medium text-brand-900 dark:text-brand-200"
-                            : "text-zinc-700 dark:text-zinc-300"
+                          isCorrectOption
+                            ? "font-medium text-emerald-900 dark:text-emerald-200"
+                            : isWrongPick
+                              ? "font-medium text-red-900 dark:text-red-200"
+                              : isSelected
+                                ? "font-medium text-brand-900 dark:text-brand-200"
+                                : "text-zinc-700 dark:text-zinc-300"
                         )}
                       >
                         {option}
                       </span>
-                      {isSelected && (
+                      {isCorrectOption ? (
+                        <Check className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                      ) : isWrongPick ? (
+                        <X className="h-4 w-4 shrink-0 text-red-500" />
+                      ) : isSelected ? (
                         <Check className="h-4 w-4 shrink-0 text-brand-600 dark:text-brand-400" />
-                      )}
+                      ) : null}
                     </button>
                   );
                 })}
+              </div>
+            )}
+
+            {/* The verdict is checked per card, not held back until submit, so
+                the correct/wrong line and the explanation land with the answer. */}
+            {verdict && (
+              <div
+                className={cn(
+                  "mt-4 flex items-start gap-3 rounded-2xl px-4 py-3.5 text-sm ring-1",
+                  verdict.correct
+                    ? "bg-emerald-50 text-emerald-800 ring-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-500/30"
+                    : "bg-red-50 text-red-700 ring-red-100 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/30"
+                )}
+              >
+                <span
+                  className={cn(
+                    "mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full",
+                    verdict.correct
+                      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300"
+                      : "bg-red-100 text-red-600 dark:bg-red-500/20 dark:text-red-300"
+                  )}
+                >
+                  {verdict.correct ? (
+                    <Check className="h-3.5 w-3.5" />
+                  ) : (
+                    <X className="h-3.5 w-3.5" />
+                  )}
+                </span>
+                <div className="min-w-0">
+                  <p className="font-semibold">
+                    {verdict.correct ? "Correct" : "Not this one"}
+                  </p>
+                  {!verdict.correct && verdict.correctAnswer && (
+                    <p className="mt-1">
+                      The answer is{" "}
+                      <span className="font-medium text-emerald-700 dark:text-emerald-300">
+                        {verdict.correctAnswer}
+                      </span>
+                    </p>
+                  )}
+                  {verdict.explanation && (
+                    <p className="mt-1 text-xs leading-5 opacity-90">
+                      {verdict.explanation}
+                    </p>
+                  )}
+                </div>
               </div>
             )}
           </motion.section>

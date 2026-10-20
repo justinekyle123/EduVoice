@@ -509,7 +509,7 @@ referenced it keep existing with `document_id = NULL` (`ON DELETE SET NULL`).
 ### 3.6 Quizzes
 
 **Page:** `/dashboard/quiz` (deep links below)
-**UI:** `QuizUI.tsx`, `VoiceQuizPlayer.tsx`
+**UI:** `QuizUI.tsx`, `VoiceQuizSession.tsx`
 
 | URL | Meaning |
 | --- | --- |
@@ -598,13 +598,29 @@ correct answer (for wrong ones) and explanation.
 **Student actions**
 
 1. Choose **Voice quiz** from the mode chooser.
-2. **Start the voice quiz** → questions are read aloud, answered out loud, and
-   advance automatically.
-3. Say **repeat / skip / stop** (or press the buttons).
-4. See “you said …” and instant **Correct / Not this one** feedback with the
-   right answer and explanation.
-5. Click an option or type a short answer at any time — the mic does not have
-   to be working for the quiz to move on.
+2. **Start the voice quiz** → the first question is read aloud immediately.
+3. The **30 s countdown** (`DEFAULT_QUESTION_SECONDS`) starts only when a
+   question's clip or live synthesis finishes — the same rule as the study
+   room's quiz.
+4. Answer on **the manual quiz's own card** (same header, segments, lettered
+   option buttons, typed field) with the voice layer on top. The option buttons
+   are **never disabled by the voice stage** — only a question that already has
+   an answer ignores a tap — so tapping works during the reading, during the
+   countdown, and after a stalled stage; a tap during the reading ends the clip
+   and reveals at once. The microphone opens with the question (the room quiz's
+   rule) and the clip's own words are filtered out, so the read-aloud is never
+   graded as the answer. **Repeat question**, **Stop listening**, and **Skip**
+   sit below the card while the question waits.
+5. The answer is judged from the interim or final transcript after ~900 ms of
+   quiet. The verdict replaces the answering card: **Correct / Not this one /
+   No answer**, the right answer and explanation, the correct option highlighted,
+   and the room quiz's pre-recorded **correct/wrong** line played from the phrase
+   bank.
+6. The reveal is held for `REVEAL_SECONDS = 8`, then the next question starts by
+   itself. Running out of time reveals the answer as unanswered (no wrong-answer
+   line); **Skip** does the same on purpose.
+7. The last reveal plays `quiz-finished` and hands every answer to the page,
+   which submits the attempt with `submitQuizAttempt`.
 
 **Pre-rendered narration (generation time)**
 
@@ -625,35 +641,46 @@ correct answer (for wrong ones) and explanation.
 
 **Answering flow**
 
-- The microphone opens when the question clip ends. Answers are judged from
-  **interim or final** recognition after ~900 ms of quiet — waiting only for a
-  final result could leave a short answer as an interim forever.
+- The microphone opens **with the question** (like the room quiz). Words heard
+  while the clip plays — and for 1.2 s after it stops, when Chrome finalizes the
+  clip's tail — are dropped, so the read-aloud is never graded as the answer.
+  Tapping an option or submitting a typed answer works during the reading and
+  ends the clip at once. **Repeat question** replays the clip through the same
+  filter.
+- Answers are judged from **interim or final** recognition after ~900 ms of
+  quiet — waiting only for a final result could leave a short answer as an
+  interim forever. The interim transcript is snapshotted **before** the
+  recognizer is aborted, so an interim-only answer is never judged as silence.
 - The quiz keeps its own recognizer alive: if Chrome ends the session on
-  silence, it reopens it. A 10 s silence watchdog uses the same “not heard”
-  path as a missed answer, so a deaf microphone can no longer hang question 1.
+  silence, it reopens it while the countdown runs. A reopen loop pauses once a
+  quiet window is armed so it cannot reset the answer being judged.
 - Only a **refused** microphone (`not-allowed` / no input device) stops
-  listening. A transient error such as a lost speech-service connection is
-  retried while the question waits — the same behaviour as the study room's
-  quiz — instead of leaving “Listening” on screen with nothing recording.
+  listening for good. A transient error such as a lost speech-service
+  connection is retried while the question waits, and the card says what went
+  wrong instead of showing “Listening” over a dead microphone.
 - Recognition steps down `ceb-PH → fil-PH → en-PH → en-US` when the browser
   rejects a language; Cebuano is rarely served, and English is always served.
-- Silence is never graded: the first two misses are re-asked out loud, then the
-  question stays open with a “couldn't hear an answer” nudge, so the student can
-  repeat, tap an option, or skip instead of being marked wrong for audio the
-  microphone never caught.
+- The answer is taken as spoken, using the room quiz's `resolveSpokenAnswer`:
+  “letter B”, “the second one”, or the option's words become that option; any
+  other choice transcript is graded verbatim, exactly as the room quiz grades
+  it. Tapping an option or submitting a typed short answer wins over the mic.
+- Silence is never marked wrong: a countdown that runs out records the question
+  as **unanswered**, reveals the right answer and explanation, and plays no
+  wrong-answer line. **Skip** does the same on purpose.
 - Option cards are buttons and the short-answer field is available while the
-  question is read or listening, so a tap is always an escape hatch.
+  countdown runs; they are disabled only once the question has a verdict, so a
+  tap is always an escape hatch.
 - The answer key travels with the attempt: `startQuizAttempt` and
-  `generateQuiz` return `answerKey` alongside the questions, so the voice player
-  checks each answer locally with the shared `isAnswerCorrect` comparison — no
-  round trip and no "checking" spinner between questions, the same instant
-  verdict the room quiz gives when a player answers.
-- Voice navigation is suspended while the player is mounted, because two
+  `generateQuiz` return `answerKey` alongside the questions, so the session
+  checks each answer locally with the shared `isAnswerCorrect` comparison.
+- Voice navigation is suspended while the session is mounted, because two
   SpeechRecognition sessions in one tab fight over the same microphone.
-- The spoken answer reveal is optional: the answer is already on screen, so a
-  slow synthesis is capped (8 s) and the next question starts without it.
+- The verdict is one of the pre-rendered `quiz-correct-*` / `quiz-wrong-*`
+  phrase-bank WAVs, played by key (a disk read, not a TTS request); a different
+  take is picked each question. The answer/explanation is shown on screen rather
+  than synthesized, so the next question is never held by a slow reveal.
 - Safety net only: a missing key is fetched with `getQuizAnswerKey(quizId)`,
-  and if that fails the player falls back to `gradeQuizAnswer({questionId,
+  and if that fails the session falls back to `gradeQuizAnswer({questionId,
   userAnswer})`, which returns `{correct, correctAnswer, explanation}` and
   writes nothing.
 - The attempt is graded again at the end by `submitQuizAttempt`, so the verdict
@@ -904,7 +931,7 @@ conditional `UPDATE`, so only one caller advances the state.
 stateDiagram-v2
     [*] --> lobby: host starts a quiz
     lobby --> question: all non-host members ready<br/>+ host presses Start
-    question --> reveal: timer expires OR host Reveal
+    question --> reveal: timer expires<br/>(after the countdown)
     reveal --> question: 8s elapsed OR host Next
     reveal --> ended: last question reached
     question --> ended: host End
@@ -917,10 +944,21 @@ stateDiagram-v2
 - `lobby`: waiting room. Host sees **Start the quiz** disabled until every
   non-host member is ready and there are ≥ 2 members.
 - `question`: everyone sees the same question and countdown. Answers accepted
-  only while `status = question` and `currentIndex` matches. The question also
-  closes itself as soon as **every non-host member has answered**
-  (`submitRoomLiveAnswer` stamps `revealed_at`), so a room that is done does not
-  sit out the rest of the clock.
+  only while `status = question` and `currentIndex` matches. The question runs
+  its **full countdown even when every non-host member has answered** — the
+  reveal is the clock's call, not the last answer's (
+  `submitRoomLiveAnswer` no longer stamps `revealed_at`), so nobody sees the
+  answer before the timer they are watching has ended.
+- **The clock waits for the read-aloud.** Every question opens with a narration
+  lead — `question_started_at = now + lead` — set *ahead* of the speech, so
+  `remainingMs` reports the full question time until the reading is over and the
+  countdown only starts when the audio does. `leadForQuestion` reads the exact
+  duration of the rendered WAV from its RIFF header (`wavDurationMs`) plus a
+  1.5 s delivery margin for the 1 s poll and clip start; a live-synthesized
+  question falls back to `narrationLeadMs` (word estimate, cap 60 s) plus 3 s.
+  The header shows **Reading…** for that window. Host **Reveal** is refused
+  until the countdown reaches zero (the button is disabled too); **Skip** stays
+  as the host's explicit override.
 - `reveal`: correct answer, explanation and per-player responses visible.
   Held for `REVEAL_SECONDS = 8` before auto-advancing. Nothing has to be
   pressed: the round runs question → reveal → next on the shared clock.
@@ -992,7 +1030,7 @@ Host controls:
 
 | Action | Effect |
 | --- | --- |
-| `revealRoomLiveQuestion` | `question → reveal`, stamps `revealed_at`. |
+| `revealRoomLiveQuestion` | `question → reveal`, stamps `revealed_at` — **only once the countdown has reached zero**; before that (including the reading lead) it is a no-op. |
 | `nextRoomLiveQuestion` | From `question`: closes to `reveal`. From `reveal`: advance to next `question` or `ended`. |
 | `endRoomLiveSession` | `→ ended`, stamps `ended_at`, finalizes results. |
 
@@ -1029,7 +1067,7 @@ Host controls:
 #### Answering surface
 
 `LiveRoomQuiz.tsx` renders the question with the same card the quiz page's voice
-player uses (`features/quiz/components/MicOrb.tsx`, `VoiceQuizPlayer.tsx`):
+player uses (`features/quiz/components/MicOrb.tsx`, `VoiceQuizSession.tsx`):
 
 - a stage orb plus "Question x of y" progress segments in the top panel;
 - the question text, then its options as lettered (A, B, C…) cards — a tap
@@ -1040,7 +1078,13 @@ player uses (`features/quiz/components/MicOrb.tsx`, `VoiceQuizPlayer.tsx`):
   finalizes is still heard;
 - once the answer is in, the card shows the locked-in words, and after `reveal`
   the verdict (correct / not this one, the answer, the explanation) with the
-  correct option highlighted.
+  correct option highlighted;
+- at `reveal`, the student who answered also hears the verdict: one of the
+  pre-rendered `quiz-correct-*` / `quiz-wrong-*` clips from the phrase bank,
+  played by key through the shared speech engine (`speakLine`), so the room's
+  feedback is a disk read rather than a TTS request. A different take is picked
+  each question, the host and non-answerers are silent, and the line stops with
+  the overlay.
 
 Room-only chrome stays: the countdown, the shared answered count, the host's
 **Reveal / Skip / Next / End**, the **Live results** board and the **This

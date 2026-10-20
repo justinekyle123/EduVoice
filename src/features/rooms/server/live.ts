@@ -34,7 +34,7 @@ import {
 } from "@/features/quiz/lib/generate";
 import { membershipFor } from "./membership";
 import { readRoomFile } from "./files";
-import { hasQuestionAudio } from "./quizAudio";
+import { hasQuestionAudio, readQuestionAudio } from "./quizAudio";
 import { renderRoomQuizVoice } from "./voiceRender";
 import {
   MANUAL_LIMITS,
@@ -44,12 +44,15 @@ import {
 } from "../lib/manualQuiz";
 import {
   clampQuestionSeconds,
+  narrationLeadMs,
   nextTransition,
+  wavDurationMs,
   rankLiveScores,
   rankLiveStandings,
   remainingMs,
   type LiveStatus,
 } from "../lib/live";
+import { liveQuestionNarration } from "../lib/narration";
 
 // Same Clerk → Postgres user resolution the rest of the app uses.
 async function requireUserId(clerkId: string): Promise<string> {
@@ -205,6 +208,69 @@ async function refetch(sessionId: string): Promise<SessionRow | null> {
   return row ?? null;
 }
 
+/**
+ * Slack after a rendered clip before the shared countdown starts: the question
+ * is delivered by a poll (up to 1 s) and the browser needs a moment to fetch and
+ * start the clip. Without it a client that polls near the end of the interval
+ * would still be hearing the question when its countdown began.
+ */
+const CLIP_START_MARGIN_MS = 1_500;
+/** A live-synthesized line starts after an HTTP round trip, so it needs more. */
+const LIVE_TTS_MARGIN_MS = 3_000;
+
+/**
+ * How long the room waits for a question's read-aloud before its clock starts.
+ *
+ * The countdown must not begin while the tutor is still speaking. For a rendered
+ * clip the server reads the exact WAV duration from disk and adds the delivery
+ * margin; a live-synthesized question (no clip, or a host-uploaded format the
+ * server cannot measure) falls back to the word estimate plus a wider margin, so
+ * the shared clock is still set ahead of the speech on every screen.
+ */
+async function leadForQuestion(
+  roomId: string,
+  question: { question: string; audioFile: string | null },
+  position: number,
+  total: number
+): Promise<number> {
+  const text = liveQuestionNarration(question, position, total);
+  const estimate = narrationLeadMs(text);
+  if (!question.audioFile) return estimate + LIVE_TTS_MARGIN_MS;
+
+  const clip = await readQuestionAudio(roomId, question.audioFile);
+  const duration = clip ? wavDurationMs(clip.bytes) : null;
+  if (duration === null) return estimate + LIVE_TTS_MARGIN_MS;
+  // A stored clip is the whole narration (a truncated render is never stored),
+  // so its own length is exact — the word estimate only adds dead air here.
+  return duration + CLIP_START_MARGIN_MS;
+}
+
+/** The narration lead for one question of a session, read fresh from the row. */
+async function narrationLeadFor(
+  session: SessionRow,
+  index: number
+): Promise<number> {
+  const [question] = await db
+    .select({
+      question: quizQuestions.question,
+      audioFile: quizQuestions.audioFile,
+    })
+    .from(quizQuestions)
+    .where(
+      and(
+        eq(quizQuestions.quizId, session.quizId),
+        eq(quizQuestions.order, index)
+      )
+    );
+  if (!question) return 0;
+  return leadForQuestion(
+    session.roomId,
+    question,
+    index + 1,
+    session.questionCount
+  );
+}
+
 function clockOf(session: SessionRow) {
   return {
     status: session.status,
@@ -312,12 +378,15 @@ async function syncSession(session: SessionRow): Promise<SessionRow> {
     }
 
     if (transition.kind === "next") {
+      // The next question is read aloud before anyone can answer it, so its
+      // clock starts when the reading is over rather than while it plays.
+      const lead = await narrationLeadFor(current, transition.index);
       const [updated] = await db
         .update(roomQuizSessions)
         .set({
           status: "question",
           currentIndex: transition.index,
-          questionStartedAt: now,
+          questionStartedAt: new Date(now.getTime() + lead),
           revealedAt: null,
         })
         .where(
@@ -832,7 +901,7 @@ export async function startRoomLiveSession(roomId: string) {
   // rendered now, while everyone is in the waiting room, so the round never
   // stops to synthesize between questions. A failure still starts the round —
   // the client reads that question live instead.
-  const questions = await loadQuestions(session.quizId);
+  let questions = await loadQuestions(session.quizId);
   const unvoiced = questions.filter((question) => !question.audioFile);
   if (unvoiced.length > 0) {
     await renderRoomQuizVoice({
@@ -842,15 +911,28 @@ export async function startRoomLiveSession(roomId: string) {
         question: question.question,
       })),
     });
+    // Re-read the rows: the renderer stamped the new audio keys, and the lead
+    // for the first question needs the clip it just wrote.
+    questions = await loadQuestions(session.quizId);
   }
 
   const now = new Date();
+  // The first question is read aloud before anyone can answer it, so its clock
+  // starts when the reading is over — measured from the clip itself.
+  const firstLead = questions[0]
+    ? await leadForQuestion(
+        session.roomId,
+        questions[0],
+        1,
+        session.questionCount
+      )
+    : 0;
   const [updated] = await db
     .update(roomQuizSessions)
     .set({
       status: "question",
       currentIndex: 0,
-      questionStartedAt: now,
+      questionStartedAt: new Date(now.getTime() + firstLead),
       revealedAt: null,
       startedAt: now,
     })
@@ -1089,44 +1171,11 @@ export async function submitRoomLiveAnswer(input: {
       },
     });
 
-  // Everyone playing has now answered: close the question rather than leaving
-  // the room watching a clock with nothing left to hear. The reveal is held for
-  // its moment and then opens the next question on its own, so the round moves
-  // like the quiz page's voice quiz. The host is excluded the same way the ready
-  // list excludes them — they run the round and may not be answering.
-  const [players, answeredRows] = await Promise.all([
-    db
-      .select({ userId: studyRoomMembers.userId, role: studyRoomMembers.role })
-      .from(studyRoomMembers)
-      .where(eq(studyRoomMembers.roomId, input.roomId)),
-    db
-      .select({ userId: roomQuizResponses.userId })
-      .from(roomQuizResponses)
-      .where(
-        and(
-          eq(roomQuizResponses.sessionId, session.id),
-          eq(roomQuizResponses.questionIndex, input.questionIndex)
-        )
-      ),
-  ]);
-  const required = players.filter((player) => player.role !== "owner");
-  const answered = new Set(answeredRows.map((row) => row.userId));
-  if (
-    required.length > 0 &&
-    required.every((player) => answered.has(player.userId))
-  ) {
-    await db
-      .update(roomQuizSessions)
-      .set({ status: "reveal", revealedAt: new Date() })
-      .where(
-        and(
-          eq(roomQuizSessions.id, session.id),
-          eq(roomQuizSessions.status, "question"),
-          eq(roomQuizSessions.currentIndex, input.questionIndex)
-        )
-      );
-  }
-
+  // The question stays open until its countdown finishes, even when every player
+  // has answered. Closing it early (the old behaviour) revealed the answer while
+  // the shared clock was still running, so a student who had just answered heard
+  // the verdict before the timer they were watching had ended. The reply says the
+  // answer was accepted; the reveal is still the clock's call (`syncSession`).
   return { accepted: true as const, isCorrect };
 }
 
@@ -1145,9 +1194,15 @@ export async function revealRoomLiveQuestion(roomId: string) {
   if (session.hostId !== userId) throw new Error("Only the host can reveal the answer");
   if (session.status !== "question") return;
 
+  // The countdown has to finish before the answer is revealed. Before the clock
+  // starts (the reading) and while it runs, the host waits like everyone else;
+  // the auto-transition reveals when it hits zero. Skip is the explicit override.
+  const now = new Date();
+  if (remainingMs(clockOf(session), now) > 0) return;
+
   await db
     .update(roomQuizSessions)
-    .set({ status: "reveal", revealedAt: new Date() })
+    .set({ status: "reveal", revealedAt: now })
     .where(
       and(
         eq(roomQuizSessions.id, session.id),
@@ -1199,12 +1254,14 @@ export async function nextRoomLiveQuestion(roomId: string) {
     return;
   }
 
+  // Read the next question aloud before its clock starts, like the poll does.
+  const lead = await narrationLeadFor(session, nextIndex);
   await db
     .update(roomQuizSessions)
     .set({
       status: "question",
       currentIndex: nextIndex,
-      questionStartedAt: now,
+      questionStartedAt: new Date(now.getTime() + lead),
       revealedAt: null,
     })
     .where(

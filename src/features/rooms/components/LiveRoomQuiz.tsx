@@ -35,6 +35,12 @@ import { cn } from "@/lib/utils";
 import { useSpeechRecognition } from "@/features/chat/hooks/useSpeechRecognition";
 import { useSpeechSynthesis } from "@/features/chat/hooks/useSpeechSynthesis";
 import { getSpeechEngine } from "@/features/chat/lib/speechEngine";
+import {
+  QUIZ_CORRECT_KEYS,
+  QUIZ_WRONG_KEYS,
+  quizLine,
+  type QuizLineKey,
+} from "@/features/chat/lib/phrases";
 import { DEFAULT_TTS_VOICE } from "@/features/chat/lib/voices";
 import { detectLanguage, speechLangFor } from "@/features/chat/lib/detect";
 import { MicOrb, type MicStage } from "@/features/quiz/components/MicOrb";
@@ -84,6 +90,16 @@ function initialsFor(name: string | null, email: string) {
   return (parts[0]?.[0] ?? "?").toUpperCase() + (parts[1]?.[0] ?? "").toUpperCase();
 }
 
+/** A verdict line, never the one that was just heard. */
+function pickVerdictKey(
+  keys: readonly QuizLineKey[],
+  previous: QuizLineKey | null
+): QuizLineKey {
+  const pool = keys.filter((key) => key !== previous);
+  const choices = pool.length > 0 ? pool : keys;
+  return choices[Math.floor(Math.random() * choices.length)];
+}
+
 /**
  * The line the narrator reads for a question. Only the question itself is
  * spoken — the choices stay on screen, where a student can read them at their
@@ -113,7 +129,15 @@ export function LiveRoomQuiz({
 
   const inFlightRef = useRef(false);
   const narratedRef = useRef<string | null>(null);
-  const { speak, speaking, stop: stopSpeaking } = useSpeechSynthesis();
+  /** Session:question whose verdict has already been spoken. */
+  const verdictHeardRef = useRef<string | null>(null);
+  const lastVerdictRef = useRef<QuizLineKey | null>(null);
+  const {
+    speak,
+    speaking,
+    stop: stopSpeaking,
+    speakLine: speakBankLine,
+  } = useSpeechSynthesis();
 
   // A host-dropped clip (manual quiz) plays instead of the TTS read-aloud. One
   // element is reused for the whole session so a new question's audio can't
@@ -179,10 +203,16 @@ export function LiveRoomQuiz({
     []
   );
 
-  // The overlay closing must not leave a clip running behind it. The cleanup
-  // goes through stopClip rather than the ref itself, so the element stays
-  // owned by the callbacks above.
-  useEffect(() => () => stopClip(), [stopClip]);
+  // The overlay closing must not leave a clip or a spoken verdict running
+  // behind it. The clip cleanup goes through stopClip rather than the ref
+  // itself, so the element stays owned by the callbacks above.
+  useEffect(
+    () => () => {
+      stopClip();
+      stopSpeaking();
+    },
+    [stopClip, stopSpeaking]
+  );
 
   const apply = useCallback((next: RoomLiveState | null) => {
     if (!next) {
@@ -258,8 +288,18 @@ export function LiveRoomQuiz({
 
   const remaining = useMemo(() => {
     if (!session || status !== "question") return 0;
+    const full = session.questionSeconds * 1000;
     const elapsed = clock + skewMs - session.questionStartedAtMs;
-    return Math.max(0, session.questionSeconds * 1000 - elapsed);
+    // A question opens with a narration lead (see `narrationLeadMs`): it shows
+    // its full time until the reading is over, so the countdown visibly starts
+    // when the audio does instead of spending the clock while it plays.
+    return Math.min(Math.max(0, full - elapsed), full);
+  }, [session, status, clock, skewMs]);
+
+  /** True while the narrator still has the question: the clock is waiting. */
+  const reading = useMemo(() => {
+    if (!session || status !== "question") return false;
+    return clock + skewMs < session.questionStartedAtMs;
   }, [session, status, clock, skewMs]);
 
   // -------------------------------------------------------------------------
@@ -299,6 +339,41 @@ export function LiveRoomQuiz({
     stopClip();
     speakLine();
   }, [state, status, questionIndex, speak, playClip, stopClip, stopSpeaking]);
+
+  /**
+   * The verdict, out loud. When the question is revealed, a student who
+   * answered hears one of the pre-rendered correct/wrong lines from the phrase
+   * bank — the same WAVs the quiz page's voice player plays, so the room's
+   * feedback costs no TTS request. A different take is picked every time, so a
+   * round of fifteen questions does not repeat one phrase.
+   *
+   * This runs after the effect above: closing the question has already stopped
+   * the narrator, so the verdict never queues behind the read-aloud. The host
+   * and members who did not answer have no `myCorrect`, so they hear nothing.
+   */
+  useEffect(() => {
+    if (!state || status !== "reveal" || !state.revealed) return;
+    if (state.myCorrect === null || !state.myAnswer) return;
+    const heard = `${state.session.id}:${state.session.currentIndex}`;
+    if (verdictHeardRef.current === heard) return;
+    verdictHeardRef.current = heard;
+
+    const key = pickVerdictKey(
+      state.myCorrect ? QUIZ_CORRECT_KEYS : QUIZ_WRONG_KEYS,
+      lastVerdictRef.current
+    );
+    lastVerdictRef.current = key;
+    const line = quizLine(key);
+    // The gesture listeners above are what actually clear the autoplay gate.
+    getSpeechEngine().unlock();
+    speakBankLine(`live-verdict-${heard}`, {
+      key,
+      text: line.text,
+      lang: "en-PH",
+      voice: DEFAULT_TTS_VOICE,
+      style: line.style,
+    });
+  }, [state, status, speakBankLine]);
 
   const readAgain = useCallback(() => {
     if (!state) return;
@@ -378,13 +453,22 @@ export function LiveRoomQuiz({
                   <span
                     className={cn(
                       "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold tabular-nums",
-                      remaining <= 5000
+                      !reading && remaining <= 5000
                         ? "bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400"
                         : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
                     )}
                   >
-                    <Clock className="h-3.5 w-3.5" />
-                    {Math.ceil(remaining / 1000)}s
+                    {reading ? (
+                      <>
+                        <Volume2 className="h-3.5 w-3.5" />
+                        Reading…
+                      </>
+                    ) : (
+                      <>
+                        <Clock className="h-3.5 w-3.5" />
+                        {Math.ceil(remaining / 1000)}s
+                      </>
+                    )}
                   </span>
                 )}
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-zinc-100 px-2.5 py-1 text-[11px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
@@ -431,7 +515,16 @@ export function LiveRoomQuiz({
                   <button
                     type="button"
                     onClick={() => void revealRoomLiveQuestion(roomId).then(refresh)}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    // The answer opens when the countdown ends, not when the host
+                    // is ready: revealing mid-clock cut the room's answer time
+                    // short. Skip remains the explicit way to move on early.
+                    disabled={reading || remaining > 0}
+                    title={
+                      reading || remaining > 0
+                        ? "The answer is revealed when the countdown ends"
+                        : "Reveal the answer"
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
                   >
                     <Eye className="h-3.5 w-3.5" />
                     Reveal
